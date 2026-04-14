@@ -1,0 +1,3250 @@
+#include "MainWindow.h"
+#include "RoundedComboBox.h"
+
+#include <algorithm>
+#include <QAbstractItemView>
+#include <QCalendarWidget>
+#include <QCheckBox>
+#include <QCloseEvent>
+#include <QColor>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QDate>
+#include <QDateEdit>
+#include <QDateTime>
+#include <QDateTimeEdit>
+#include <QDir>
+#include <QEvent>
+#include <QFileInfo>
+#include <QFrame>
+#include <QFont>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QIcon>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QMessageBox>
+#include <QMenu>
+#include <QPushButton>
+#include <QProgressBar>
+#include <QRegularExpression>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QScreen>
+#include <QSettings>
+#include <QSignalBlocker>
+#include <QSizePolicy>
+#include <QSpinBox>
+#include <QStatusBar>
+#include <QStyle>
+#include <QSystemTrayIcon>
+#include <QStandardPaths>
+#include <QTabWidget>
+#include <QTimer>
+#include <QTextCharFormat>
+#include <QVBoxLayout>
+#include <QWheelEvent>
+#include <QWidget>
+
+namespace {
+QString appConfigDirPath() {
+    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (!configPath.isEmpty()) {
+        return configPath;
+    }
+
+    const QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (!dataPath.isEmpty()) {
+        return dataPath;
+    }
+
+    const QString appDirPath = QCoreApplication::applicationDirPath();
+    if (!appDirPath.isEmpty()) {
+        return appDirPath;
+    }
+
+    return QDir::currentPath();
+}
+
+bool ensureParentDir(const QString &filePath) {
+    const QFileInfo fileInfo(filePath);
+    QDir dir(fileInfo.absolutePath());
+    return dir.exists() || dir.mkpath(".");
+}
+}
+
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+    setObjectName("HTodoWindow");
+    setWindowTitle("HTodo");
+    setWindowIcon(QIcon(":/icons/htodo.png"));
+    setWindowFlag(Qt::WindowMaximizeButtonHint, false);
+    setFixedSize(1160, 860);
+
+    m_tabs = new QTabWidget(this);
+    m_tabs->setObjectName("mainTabs");
+    m_tabs->setDocumentMode(true);
+    m_tabs->addTab(buildTodoTab(), "任务");
+    m_tabs->addTab(buildPomodoroTab(), "番茄钟");
+    m_tabs->addTab(buildStatsTab(), "统计");
+
+    auto *tabCorner = new QWidget(m_tabs);
+    auto *tabCornerLayout = new QHBoxLayout(tabCorner);
+    tabCornerLayout->setContentsMargins(0, 0, 0, 0);
+    tabCornerLayout->setSpacing(8);
+    auto *layoutLabel = new QLabel("布局", tabCorner);
+    layoutLabel->setObjectName("mutedText");
+    m_layoutModeSelector = new RoundedComboBox(tabCorner);
+    m_layoutModeSelector->addItem(windowLayoutModeText(WindowLayoutMode::Standard),
+                                  static_cast<int>(WindowLayoutMode::Standard));
+    m_layoutModeSelector->addItem(windowLayoutModeText(WindowLayoutMode::Compact),
+                                  static_cast<int>(WindowLayoutMode::Compact));
+    m_layoutModeSelector->setMinimumHeight(34);
+    m_layoutModeSelector->setMinimumWidth(124);
+    tabCornerLayout->addWidget(layoutLabel);
+    tabCornerLayout->addWidget(m_layoutModeSelector);
+    m_tabs->setCornerWidget(tabCorner, Qt::TopRightCorner);
+
+    setCentralWidget(m_tabs);
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        applyWindowPresetForTab(index);
+        saveUiState();
+    });
+    connect(m_layoutModeSelector, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (m_layoutModeSelector == nullptr) {
+            return;
+        }
+        const auto mode = static_cast<WindowLayoutMode>(m_layoutModeSelector->itemData(index).toInt());
+        setWindowLayoutMode(mode);
+        saveUiState();
+    });
+
+    connect(m_addTodoButton, &QPushButton::clicked, this, &MainWindow::addTodo);
+    connect(m_todoInput, &QLineEdit::returnPressed, this, &MainWindow::addTodo);
+    connect(m_cancelEditButton, &QPushButton::clicked, this, &MainWindow::cancelTodoEdit);
+    connect(m_todoList, &QListWidget::itemSelectionChanged, this, &MainWindow::onTodoSelectionChanged);
+    connect(m_dueAtEnabled, &QCheckBox::toggled, m_dueAtInput, &QDateTimeEdit::setEnabled);
+    connect(m_dateNavigator, &QCalendarWidget::selectionChanged, this, [this]() {
+        const QDate selected = m_dateNavigator->selectedDate();
+        if (!selected.isValid() || selected == m_selectedDate) {
+            return;
+        }
+
+        m_selectedDate = selected;
+        if (m_editingTodoId.isEmpty()) {
+            m_taskDateInput->setDate(m_selectedDate);
+        }
+        refreshTodoList();
+        saveUiState();
+    });
+    connect(m_prevDayButton, &QPushButton::clicked, this, [this]() {
+        m_dateNavigator->setSelectedDate(m_selectedDate.addDays(-1));
+    });
+    connect(m_nextDayButton, &QPushButton::clicked, this, [this]() {
+        m_dateNavigator->setSelectedDate(m_selectedDate.addDays(1));
+    });
+    connect(m_todayQuickButton, &QPushButton::clicked, this, [this]() {
+        m_dateNavigator->setSelectedDate(QDate::currentDate());
+    });
+    connect(m_taskDateInput, &QDateEdit::dateChanged, this, [this](const QDate &date) {
+        if (!m_dueAtEnabled->isChecked()) {
+            return;
+        }
+
+        QDateTime dueAt = m_dueAtInput->dateTime();
+        dueAt.setDate(date);
+        m_dueAtInput->setDateTime(dueAt);
+    });
+    connect(m_viewModeFilter, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        refreshTodoList();
+        saveUiState();
+    });
+    connect(m_priorityFilter, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        refreshTodoList();
+        saveUiState();
+    });
+    connect(m_tagFilterInput, &QLineEdit::textChanged, this, [this]() {
+        refreshTodoList();
+        saveUiState();
+    });
+    connect(m_clearFilterButton, &QPushButton::clicked, this, [this]() {
+        m_viewModeFilter->setCurrentIndex(0);
+        m_priorityFilter->setCurrentIndex(0);
+        m_tagFilterInput->clear();
+    });
+
+    connect(m_startPauseButton, &QPushButton::clicked, this, &MainWindow::togglePomodoro);
+    connect(m_stopPomodoroButton, &QPushButton::clicked, this, [this]() {
+        if (m_storage.hasActiveTodoTiming()) {
+            statusBar()->showMessage("任务手动计时进行中，当前时钟由任务计时占用。", 4000);
+            return;
+        }
+
+        const QString taskId = m_pomodoroTaskSelector->currentData().toString();
+        const qint64 elapsedSeconds = static_cast<qint64>(qMax(
+            0, m_focusMinutes->value() * 60 - m_timer.remainingSeconds()));
+        const bool shouldAccumulate = m_pomodoroTaskSelectionLocked
+                                      && m_timer.phase() == PomodoroTimer::Phase::Focus
+                                      && elapsedSeconds > 0
+                                      && !taskId.isEmpty();
+
+        if (shouldAccumulate) {
+            if (m_storage.addTrackedSeconds(taskId, elapsedSeconds)) {
+                statusBar()->showMessage(QString("已停止番茄钟，并累计 %1 到当前任务").arg(formatDuration(elapsedSeconds)), 3500);
+            } else {
+                statusBar()->showMessage("已停止番茄钟，但写入任务时长失败", 4000);
+            }
+        } else {
+            statusBar()->showMessage("已停止番茄钟", 2500);
+        }
+
+        m_timer.reset();
+        m_pomodoroTaskSelectionLocked = false;
+        refreshStats();
+        refreshPomodoroBindings();
+        refreshPomodoroView(m_timer.remainingSeconds(), m_timer.phase());
+        refreshPomodoroTaskTimingPanel();
+    });
+    connect(m_resetButton, &QPushButton::clicked, this, &MainWindow::resetPomodoro);
+    connect(m_pomodoroFocusCardButton, &QPushButton::clicked, this, [this]() {
+        togglePomodoroFocusCard();
+    });
+    connect(m_pomodoroTaskSelector, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+        refreshPomodoroTaskTimingPanel();
+    });
+    connect(m_pomodoroTaskTimingButton, &QPushButton::clicked, this, [this]() {
+        if (m_pomodoroTaskSelector == nullptr) {
+            return;
+        }
+        toggleTodoTiming(m_pomodoroTaskSelector->currentData().toString());
+    });
+
+    m_taskTimingRefreshTimer = new QTimer(this);
+    m_taskTimingRefreshTimer->setInterval(1000);
+    connect(m_taskTimingRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshTaskTimingUi);
+
+    connect(m_focusMinutes, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
+        m_timer.setDurations(m_focusMinutes->value(), m_breakMinutes->value());
+        saveUiState();
+    });
+    connect(m_breakMinutes, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
+        m_timer.setDurations(m_focusMinutes->value(), m_breakMinutes->value());
+        saveUiState();
+    });
+    connect(m_presetBalancedButton, &QPushButton::clicked, this, [this]() {
+        m_focusMinutes->setValue(25);
+        m_breakMinutes->setValue(5);
+    });
+    connect(m_presetDeepFocusButton, &QPushButton::clicked, this, [this]() {
+        m_focusMinutes->setValue(50);
+        m_breakMinutes->setValue(10);
+    });
+    connect(m_presetQuickButton, &QPushButton::clicked, this, [this]() {
+        m_focusMinutes->setValue(15);
+        m_breakMinutes->setValue(3);
+    });
+
+    connect(&m_timer, &PomodoroTimer::tick, this, &MainWindow::onPomodoroTick);
+    connect(&m_timer, &PomodoroTimer::phaseCompleted, this, &MainWindow::onPomodoroPhaseCompleted);
+    connect(&m_timer, &PomodoroTimer::stateChanged, this, [this](bool running, PomodoroTimer::Phase) {
+        m_startPauseButton->setText(running ? "暂停" : "开始");
+        refreshPomodoroTaskTimingPanel();
+        refreshPomodoroView(m_timer.remainingSeconds(), m_timer.phase());
+    });
+
+    m_timer.setDurations(m_focusMinutes->value(), m_breakMinutes->value());
+    m_timer.reset();
+    updatePomodoroFocusCardButton();
+    statusBar()->setSizeGripEnabled(false);
+    setupTrayIcon();
+
+    resetTodoForm();
+    applyTheme();
+    applyWindowLayoutMode();
+    loadUiState();
+    refreshAll();
+    updateTrayActions();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    if (!m_quitRequested && m_trayIcon != nullptr && m_trayIcon->isVisible()) {
+        saveUiState();
+        hide();
+        updateTrayActions();
+        if (!m_trayHintShown) {
+            m_trayIcon->showMessage("HTodo", "窗口已隐藏到系统托盘，可通过托盘图标恢复。", QSystemTrayIcon::Information, 2500);
+            m_trayHintShown = true;
+        }
+        event->ignore();
+        return;
+    }
+
+    saveUiState();
+    if (m_pomodoroFocusCard != nullptr) {
+        m_pomodoroFocusCard->hide();
+    }
+    QMainWindow::closeEvent(event);
+}
+
+QString MainWindow::settingsFilePath() const {
+    const QString appName = QCoreApplication::applicationName().isEmpty()
+                                ? QStringLiteral("HTodo")
+                                : QCoreApplication::applicationName();
+    return QDir(appConfigDirPath()).filePath(appName + ".ini");
+}
+
+QString MainWindow::windowPositionSettingsKey(WindowLayoutMode mode) const {
+    switch (mode) {
+    case WindowLayoutMode::Compact:
+        return QStringLiteral("window/position_compact");
+    case WindowLayoutMode::Standard:
+    default:
+        return QStringLiteral("window/position_standard");
+    }
+}
+
+QPoint MainWindow::savedWindowPosition(WindowLayoutMode mode) const {
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    const QPoint modeSpecificPosition = settings.value(windowPositionSettingsKey(mode)).toPoint();
+    if (!modeSpecificPosition.isNull()) {
+        return modeSpecificPosition;
+    }
+    return settings.value("window/position").toPoint();
+}
+
+void MainWindow::setupTrayIcon() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    QIcon trayIcon = windowIcon();
+    if (trayIcon.isNull()) {
+        trayIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
+        setWindowIcon(trayIcon);
+    }
+
+    m_trayMenu = new QMenu(this);
+    m_showWindowAction = m_trayMenu->addAction("显示主窗口");
+    m_hideWindowAction = m_trayMenu->addAction("隐藏主窗口");
+    m_trayMenu->addSeparator();
+    m_quitAction = m_trayMenu->addAction("退出");
+
+    m_trayIcon = new QSystemTrayIcon(trayIcon, this);
+    m_trayIcon->setToolTip("HTodo");
+    m_trayIcon->setContextMenu(m_trayMenu);
+
+    connect(m_showWindowAction, &QAction::triggered, this, &MainWindow::showFromTray);
+    connect(m_hideWindowAction, &QAction::triggered, this, [this]() {
+        saveUiState();
+        hide();
+        updateTrayActions();
+    });
+    connect(m_quitAction, &QAction::triggered, this, [this]() {
+        m_quitRequested = true;
+        saveUiState();
+        if (m_trayIcon != nullptr) {
+            m_trayIcon->hide();
+        }
+        close();
+    });
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+            if (isHidden()) {
+                showFromTray();
+            } else {
+                saveUiState();
+                hide();
+                updateTrayActions();
+            }
+        }
+    });
+
+    m_trayIcon->show();
+}
+
+void MainWindow::updateTrayActions() {
+    if (m_showWindowAction != nullptr) {
+        m_showWindowAction->setEnabled(isHidden());
+    }
+    if (m_hideWindowAction != nullptr) {
+        m_hideWindowAction->setEnabled(!isHidden());
+    }
+}
+
+void MainWindow::showFromTray() {
+    show();
+    raise();
+    activateWindow();
+    updateTrayActions();
+}
+
+void MainWindow::loadUiState() {
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+
+    const auto savedLayoutMode = static_cast<WindowLayoutMode>(
+        settings.value("window/layout_mode", static_cast<int>(WindowLayoutMode::Standard)).toInt());
+    if (m_layoutModeSelector != nullptr) {
+        const QSignalBlocker blocker(m_layoutModeSelector);
+        for (int i = 0; i < m_layoutModeSelector->count(); ++i) {
+            if (m_layoutModeSelector->itemData(i).toInt() == static_cast<int>(savedLayoutMode)) {
+                m_layoutModeSelector->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+    m_windowLayoutMode = savedLayoutMode;
+    applyWindowLayoutMode();
+
+    const QDate savedDate = QDate::fromString(settings.value("todo/selected_date").toString(), Qt::ISODate);
+    if (savedDate.isValid()) {
+        m_selectedDate = savedDate;
+        if (m_dateNavigator != nullptr) {
+            const QSignalBlocker blocker(m_dateNavigator);
+            m_dateNavigator->setSelectedDate(savedDate);
+        }
+        if (m_taskDateInput != nullptr && m_editingTodoId.isEmpty()) {
+            const QSignalBlocker blocker(m_taskDateInput);
+            m_taskDateInput->setDate(savedDate);
+        }
+    }
+
+    if (m_viewModeFilter != nullptr) {
+        const int savedMode = settings.value("todo/view_mode", static_cast<int>(TodoListMode::Today)).toInt();
+        const QSignalBlocker blocker(m_viewModeFilter);
+        for (int i = 0; i < m_viewModeFilter->count(); ++i) {
+            if (m_viewModeFilter->itemData(i).toInt() == savedMode) {
+                m_viewModeFilter->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+
+    if (m_priorityFilter != nullptr) {
+        const int savedPriority = settings.value("todo/priority_filter", -1).toInt();
+        const QSignalBlocker blocker(m_priorityFilter);
+        for (int i = 0; i < m_priorityFilter->count(); ++i) {
+            if (m_priorityFilter->itemData(i).toInt() == savedPriority) {
+                m_priorityFilter->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+
+    if (m_tagFilterInput != nullptr) {
+        const QSignalBlocker blocker(m_tagFilterInput);
+        m_tagFilterInput->setText(settings.value("todo/tag_filter").toString());
+    }
+
+    if (m_focusMinutes != nullptr) {
+        const int savedFocusMinutes = settings.value("pomodoro/focus_minutes", m_focusMinutes->value()).toInt();
+        const QSignalBlocker blocker(m_focusMinutes);
+        m_focusMinutes->setValue(qBound(m_focusMinutes->minimum(), savedFocusMinutes, m_focusMinutes->maximum()));
+    }
+
+    if (m_breakMinutes != nullptr) {
+        const int savedBreakMinutes = settings.value("pomodoro/break_minutes", m_breakMinutes->value()).toInt();
+        const QSignalBlocker blocker(m_breakMinutes);
+        m_breakMinutes->setValue(qBound(m_breakMinutes->minimum(), savedBreakMinutes, m_breakMinutes->maximum()));
+    }
+    m_timer.setDurations(m_focusMinutes->value(), m_breakMinutes->value());
+
+    if (m_tabs != nullptr) {
+        const int savedTab = settings.value("window/current_tab", 0).toInt();
+        const int boundedTab = qBound(0, savedTab, m_tabs->count() - 1);
+        const QSignalBlocker blocker(m_tabs);
+        m_tabs->setCurrentIndex(boundedTab);
+    }
+    applyWindowPresetForTab(m_tabs != nullptr ? m_tabs->currentIndex() : 0);
+
+    const QPoint savedPosition = savedWindowPosition(m_windowLayoutMode);
+    if (!savedPosition.isNull()) {
+        move(savedPosition);
+    }
+    m_trayHintShown = settings.value("tray/hint_shown", false).toBool();
+}
+
+void MainWindow::saveUiState() const {
+    ensureParentDir(settingsFilePath());
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    settings.setValue("window/position", pos());
+    settings.setValue(windowPositionSettingsKey(m_windowLayoutMode), pos());
+    settings.setValue("window/current_tab", m_tabs != nullptr ? m_tabs->currentIndex() : 0);
+    settings.setValue("window/layout_mode", static_cast<int>(m_windowLayoutMode));
+    settings.setValue("todo/selected_date", m_selectedDate.toString(Qt::ISODate));
+    settings.setValue("todo/view_mode", m_viewModeFilter != nullptr ? m_viewModeFilter->currentData().toInt() : 0);
+    settings.setValue("todo/priority_filter", m_priorityFilter != nullptr ? m_priorityFilter->currentData().toInt() : -1);
+    settings.setValue("todo/tag_filter", m_tagFilterInput != nullptr ? m_tagFilterInput->text() : QString());
+    settings.setValue("pomodoro/focus_minutes", m_focusMinutes != nullptr ? m_focusMinutes->value() : 25);
+    settings.setValue("pomodoro/break_minutes", m_breakMinutes != nullptr ? m_breakMinutes->value() : 5);
+    settings.setValue("tray/hint_shown", m_trayHintShown);
+    settings.sync();
+}
+
+void MainWindow::applyWindowPresetForTab(int index) {
+    const QSize targetSize = (m_windowLayoutMode == WindowLayoutMode::Compact || index == 1)
+                                 ? QSize(560, 860)
+                                 : QSize(1160, 860);
+    setFixedSize(targetSize);
+}
+
+void MainWindow::setWindowLayoutMode(WindowLayoutMode mode) {
+    if (m_windowLayoutMode == mode) {
+        applyWindowPresetForTab(m_tabs != nullptr ? m_tabs->currentIndex() : 0);
+        return;
+    }
+
+    {
+        ensureParentDir(settingsFilePath());
+        QSettings settings(settingsFilePath(), QSettings::IniFormat);
+        settings.setValue(windowPositionSettingsKey(m_windowLayoutMode), pos());
+        settings.sync();
+    }
+
+    m_windowLayoutMode = mode;
+    applyWindowLayoutMode();
+    applyWindowPresetForTab(m_tabs != nullptr ? m_tabs->currentIndex() : 0);
+    const QPoint restoredPosition = savedWindowPosition(mode);
+    if (!restoredPosition.isNull()) {
+        move(restoredPosition);
+    }
+}
+
+void MainWindow::applyWindowLayoutMode() {
+    const bool compact = m_windowLayoutMode == WindowLayoutMode::Compact;
+
+    if (m_todoContentLayout != nullptr) {
+        m_todoContentLayout->setContentsMargins(compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28);
+        m_todoContentLayout->setSpacing(compact ? 14 : 18);
+    }
+
+    if (m_todoWorkspaceLayout != nullptr) {
+        m_todoWorkspaceLayout->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        m_todoWorkspaceLayout->setSpacing(compact ? 14 : 20);
+    }
+
+    if (m_todoMetaRow != nullptr) {
+        m_todoMetaRow->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        m_todoMetaRow->setSpacing(compact ? 10 : 14);
+    }
+
+    if (m_todoBottomRow != nullptr) {
+        m_todoBottomRow->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        m_todoBottomRow->setSpacing(compact ? 10 : 14);
+    }
+
+    if (m_todoSidebarCard != nullptr) {
+        m_todoSidebarCard->setMinimumWidth(compact ? 0 : 344);
+        m_todoSidebarCard->setMaximumWidth(compact ? QWIDGETSIZE_MAX : 364);
+    }
+
+    if (m_todoEditorCard != nullptr) {
+        m_todoEditorCard->setMinimumHeight(compact ? 0 : 228);
+    }
+
+    if (m_dateNavigator != nullptr) {
+        m_dateNavigator->setFixedHeight(compact ? 204 : 232);
+    }
+
+    if (m_todoList != nullptr) {
+        m_todoList->setMinimumHeight(compact ? 280 : 0);
+    }
+
+    if (m_statsContentLayout != nullptr) {
+        m_statsContentLayout->setContentsMargins(compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28);
+        m_statsContentLayout->setSpacing(compact ? 14 : 16);
+    }
+
+    rebuildStatsMetricLayout();
+}
+
+void MainWindow::rebuildStatsMetricLayout() {
+    if (m_statsOverviewGrid == nullptr || m_statsDetailGrid == nullptr) {
+        return;
+    }
+
+    while (QLayoutItem *item = m_statsOverviewGrid->takeAt(0)) {
+        delete item;
+    }
+    while (QLayoutItem *item = m_statsDetailGrid->takeAt(0)) {
+        delete item;
+    }
+
+    const bool compact = m_windowLayoutMode == WindowLayoutMode::Compact;
+    m_statsOverviewGrid->setHorizontalSpacing(compact ? 10 : 14);
+    m_statsOverviewGrid->setVerticalSpacing(compact ? 10 : 14);
+    m_statsDetailGrid->setHorizontalSpacing(compact ? 10 : 14);
+    m_statsDetailGrid->setVerticalSpacing(compact ? 10 : 14);
+
+    if (compact) {
+        m_statsOverviewGrid->addWidget(m_totalTodayCard, 0, 0);
+        m_statsOverviewGrid->addWidget(m_completedTodayCard, 1, 0);
+        m_statsOverviewGrid->addWidget(m_completionRateCard, 2, 0);
+        m_statsOverviewGrid->addWidget(m_focusTodayCard, 3, 0);
+
+        m_statsDetailGrid->addWidget(m_focusWeekCard, 0, 0);
+        m_statsDetailGrid->addWidget(m_taskTimingTodayCard, 1, 0);
+        m_statsDetailGrid->addWidget(m_activeTaskTimingCard, 2, 0);
+        return;
+    }
+
+    m_statsOverviewGrid->addWidget(m_totalTodayCard, 0, 0);
+    m_statsOverviewGrid->addWidget(m_completedTodayCard, 0, 1);
+    m_statsOverviewGrid->addWidget(m_completionRateCard, 1, 0);
+    m_statsOverviewGrid->addWidget(m_focusTodayCard, 1, 1);
+
+    m_statsDetailGrid->addWidget(m_focusWeekCard, 0, 0);
+    m_statsDetailGrid->addWidget(m_taskTimingTodayCard, 0, 1);
+    m_statsDetailGrid->addWidget(m_activeTaskTimingCard, 1, 0, 1, 2);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::Wheel) {
+        QWidget *watchedWidget = qobject_cast<QWidget *>(watched);
+        const bool onCalendar = m_dateNavigator != nullptr
+                                && (watched == m_dateNavigator
+                                    || (watchedWidget != nullptr && m_dateNavigator->isAncestorOf(watchedWidget)));
+        const bool onTaskDateInput = m_taskDateInput != nullptr
+                                     && (watched == m_taskDateInput
+                                         || (watchedWidget != nullptr && m_taskDateInput->isAncestorOf(watchedWidget)));
+        const bool onDueAtInput = m_dueAtInput != nullptr
+                                  && (watched == m_dueAtInput
+                                      || (watchedWidget != nullptr && m_dueAtInput->isAncestorOf(watchedWidget)));
+
+        if (onCalendar || onTaskDateInput || onDueAtInput) {
+            if (m_todoScrollArea != nullptr) {
+                auto *wheelEvent = static_cast<QWheelEvent *>(event);
+                QScrollBar *scrollBar = m_todoScrollArea->verticalScrollBar();
+                if (scrollBar != nullptr) {
+                    int delta = 0;
+                    if (!wheelEvent->pixelDelta().isNull()) {
+                        delta = wheelEvent->pixelDelta().y();
+                    } else if (!wheelEvent->angleDelta().isNull()) {
+                        delta = (wheelEvent->angleDelta().y() / 120) * qMax(24, scrollBar->singleStep() * 3);
+                    }
+
+                    if (delta != 0) {
+                        scrollBar->setValue(scrollBar->value() - delta);
+                    }
+                }
+            }
+            return true;
+        }
+    }
+
+    return QMainWindow::eventFilter(watched, event);
+}
+
+QWidget *MainWindow::buildTodoTab() {
+    auto *tab = new QWidget(this);
+    auto configureComboBox = [](RoundedComboBox *combo, int minimumWidth) {
+        combo->setMinimumWidth(minimumWidth);
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    };
+
+    auto *rootLayout = new QVBoxLayout(tab);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    auto *scrollArea = new QScrollArea(tab);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_todoScrollArea = scrollArea;
+
+    auto *content = new QWidget(scrollArea);
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(28, 28, 28, 28);
+    layout->setSpacing(18);
+    m_todoContentLayout = layout;
+
+    auto *headerLayout = new QHBoxLayout();
+    headerLayout->setSpacing(12);
+    m_todayLabel = new QLabel(tab);
+    m_todayLabel->setObjectName("pageTitle");
+
+    m_todoSummaryLabel = new QLabel(tab);
+    m_todoSummaryLabel->setObjectName("summaryPill");
+
+    m_filterToggleButton = new QPushButton("视图与筛选", tab);
+    m_filterToggleButton->setObjectName("secondaryButton");
+    m_filterToggleButton->setMinimumHeight(36);
+
+    headerLayout->addWidget(m_todayLabel);
+    headerLayout->addStretch(1);
+    headerLayout->addWidget(m_filterToggleButton);
+    headerLayout->addWidget(m_todoSummaryLabel);
+
+    m_overdueReminderLabel = new QLabel(tab);
+    m_overdueReminderLabel->setObjectName("overdueBanner");
+    m_overdueReminderLabel->setVisible(false);
+
+    auto *workspaceLayout = new QHBoxLayout();
+    workspaceLayout->setSpacing(20);
+    m_todoWorkspaceLayout = workspaceLayout;
+
+    auto *sidebarCard = new QFrame(content);
+    sidebarCard->setObjectName("sidebarCard");
+    sidebarCard->setMinimumWidth(344);
+    sidebarCard->setMaximumWidth(364);
+    m_todoSidebarCard = sidebarCard;
+    auto *sidebarLayout = new QVBoxLayout(sidebarCard);
+    sidebarLayout->setContentsMargins(16, 16, 16, 16);
+    sidebarLayout->setSpacing(10);
+
+    m_selectedDateLabel = new QLabel(formatDateTitle(m_selectedDate), sidebarCard);
+    m_selectedDateLabel->setObjectName("sidebarTitle");
+    m_selectedDateMetaLabel = new QLabel("单日视图的任务导航", sidebarCard);
+    m_selectedDateMetaLabel->setObjectName("mutedText");
+
+    auto *navigatorButtons = new QHBoxLayout();
+    navigatorButtons->setSpacing(4);
+    m_prevDayButton = new QPushButton("前一天", sidebarCard);
+    m_prevDayButton->setObjectName("secondaryButton");
+    m_todayQuickButton = new QPushButton("今天", sidebarCard);
+    m_todayQuickButton->setObjectName("primaryButton");
+    m_nextDayButton = new QPushButton("后一天", sidebarCard);
+    m_nextDayButton->setObjectName("secondaryButton");
+    m_prevDayButton->setMinimumHeight(36);
+    m_todayQuickButton->setMinimumHeight(36);
+    m_nextDayButton->setMinimumHeight(36);
+    navigatorButtons->addWidget(m_prevDayButton, 1);
+    navigatorButtons->addWidget(m_todayQuickButton, 1);
+    navigatorButtons->addWidget(m_nextDayButton, 1);
+
+    m_dateNavigator = new QCalendarWidget(sidebarCard);
+    m_dateNavigator->setSelectedDate(m_selectedDate);
+    m_dateNavigator->setGridVisible(false);
+    m_dateNavigator->setHorizontalHeaderFormat(QCalendarWidget::SingleLetterDayNames);
+    m_dateNavigator->setVerticalHeaderFormat(QCalendarWidget::NoVerticalHeader);
+    m_dateNavigator->setNavigationBarVisible(true);
+    m_dateNavigator->setFixedHeight(232);
+    m_dateNavigator->installEventFilter(this);
+    const auto calendarChildren = m_dateNavigator->findChildren<QWidget *>();
+    for (QWidget *child : calendarChildren) {
+        child->installEventFilter(this);
+    }
+
+    m_dayTaskCountLabel = new QLabel(sidebarCard);
+    m_dayTaskCountLabel->setObjectName("sidebarStatCard");
+    m_dayTaskCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_dayDoneCountLabel = new QLabel(sidebarCard);
+    m_dayDoneCountLabel->setObjectName("sidebarStatCard");
+    m_dayDoneCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_dayFocusCountLabel = new QLabel(sidebarCard);
+    m_dayFocusCountLabel->setObjectName("sidebarStatCard");
+    m_dayFocusCountLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    auto *statsLayout = new QGridLayout();
+    statsLayout->setHorizontalSpacing(10);
+    statsLayout->setVerticalSpacing(10);
+    statsLayout->addWidget(m_dayTaskCountLabel, 0, 0);
+    statsLayout->addWidget(m_dayDoneCountLabel, 0, 1);
+    statsLayout->addWidget(m_dayFocusCountLabel, 1, 0, 1, 2);
+
+    sidebarLayout->addWidget(m_selectedDateLabel);
+    sidebarLayout->addWidget(m_selectedDateMetaLabel);
+    sidebarLayout->addLayout(navigatorButtons);
+    sidebarLayout->addWidget(m_dateNavigator);
+    sidebarLayout->addLayout(statsLayout);
+    sidebarLayout->addStretch(1);
+
+    auto *contentLayout = new QVBoxLayout();
+    contentLayout->setSpacing(12);
+
+    auto *editorCard = new QFrame(content);
+    editorCard->setObjectName("surfaceCard");
+    editorCard->setMinimumHeight(228);
+    editorCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    m_todoEditorCard = editorCard;
+    auto *editorCardLayout = new QVBoxLayout(editorCard);
+    editorCardLayout->setContentsMargins(16, 16, 16, 16);
+    editorCardLayout->setSpacing(12);
+
+    m_editorCaptionLabel = new QLabel("新建任务", editorCard);
+    m_editorCaptionLabel->setObjectName("sectionTitle");
+
+    m_todoInput = new QLineEdit(tab);
+    m_todoInput->setPlaceholderText("输入今天要做的事情...");
+    m_todoInput->setMinimumHeight(38);
+
+    m_taskDateInput = new QDateEdit(QDate::currentDate(), tab);
+    m_taskDateInput->setDisplayFormat("yyyy-MM-dd");
+    m_taskDateInput->setCalendarPopup(true);
+    m_taskDateInput->setMinimumHeight(38);
+    m_taskDateInput->installEventFilter(this);
+    for (QWidget *child : m_taskDateInput->findChildren<QWidget *>()) {
+        child->installEventFilter(this);
+    }
+
+    m_priorityInput = new RoundedComboBox(tab);
+    m_priorityInput->addItem("高", static_cast<int>(TaskPriority::High));
+    m_priorityInput->addItem("中", static_cast<int>(TaskPriority::Medium));
+    m_priorityInput->addItem("低", static_cast<int>(TaskPriority::Low));
+    m_priorityInput->setCurrentIndex(1);
+    configureComboBox(m_priorityInput, 120);
+    m_priorityInput->setMinimumHeight(38);
+
+    m_dueAtEnabled = new QCheckBox("截止时间", tab);
+    m_dueAtInput = new QDateTimeEdit(QDateTime::currentDateTime(), tab);
+    m_dueAtInput->setDisplayFormat("yyyy-MM-dd HH:mm");
+    m_dueAtInput->setCalendarPopup(true);
+    m_dueAtInput->setEnabled(false);
+    m_dueAtInput->setMinimumHeight(38);
+    m_dueAtInput->installEventFilter(this);
+    for (QWidget *child : m_dueAtInput->findChildren<QWidget *>()) {
+        child->installEventFilter(this);
+    }
+
+    m_tagInput = new QLineEdit(tab);
+    m_tagInput->setPlaceholderText("标签，使用逗号分隔");
+    m_tagInput->setMinimumHeight(38);
+    m_tagPresetSelector = new RoundedComboBox(tab);
+    m_tagPresetSelector->setMinimumHeight(38);
+    configureComboBox(m_tagPresetSelector, 120);
+    auto *addTagPresetButton = new QPushButton("加入标签", tab);
+    addTagPresetButton->setObjectName("secondaryButton");
+    addTagPresetButton->setMinimumHeight(38);
+
+    m_addTodoButton = new QPushButton("添加", tab);
+    m_addTodoButton->setObjectName("primaryButton");
+    m_addTodoButton->setMinimumHeight(38);
+    m_addTodoButton->setMinimumWidth(120);
+    m_cancelEditButton = new QPushButton("取消编辑", tab);
+    m_cancelEditButton->setObjectName("secondaryButton");
+    m_cancelEditButton->setMinimumHeight(38);
+    m_cancelEditButton->setMinimumWidth(120);
+
+    auto *editorLayout = new QVBoxLayout();
+    editorLayout->setSpacing(12);
+
+    auto *taskField = new QWidget(tab);
+    auto *taskFieldLayout = new QVBoxLayout(taskField);
+    taskFieldLayout->setContentsMargins(0, 0, 0, 0);
+    taskFieldLayout->setSpacing(6);
+    taskFieldLayout->addWidget(new QLabel("任务", taskField));
+    taskFieldLayout->addWidget(m_todoInput);
+
+    auto *metaRow = new QHBoxLayout();
+    metaRow->setSpacing(14);
+    m_todoMetaRow = metaRow;
+
+    auto *dateField = new QWidget(tab);
+    auto *dateFieldLayout = new QVBoxLayout(dateField);
+    dateFieldLayout->setContentsMargins(0, 0, 0, 0);
+    dateFieldLayout->setSpacing(6);
+    dateFieldLayout->addWidget(new QLabel("任务日期", dateField));
+    dateFieldLayout->addWidget(m_taskDateInput);
+
+    auto *priorityField = new QWidget(tab);
+    auto *priorityFieldLayout = new QVBoxLayout(priorityField);
+    priorityFieldLayout->setContentsMargins(0, 0, 0, 0);
+    priorityFieldLayout->setSpacing(6);
+    priorityFieldLayout->addWidget(new QLabel("优先级", priorityField));
+    priorityFieldLayout->addWidget(m_priorityInput);
+
+    auto *dueField = new QWidget(tab);
+    auto *dueFieldLayout = new QVBoxLayout(dueField);
+    dueFieldLayout->setContentsMargins(0, 0, 0, 0);
+    dueFieldLayout->setSpacing(6);
+    dueFieldLayout->addWidget(m_dueAtEnabled);
+    dueFieldLayout->addWidget(m_dueAtInput);
+
+    metaRow->addWidget(dateField, 2);
+    metaRow->addWidget(priorityField, 1);
+    metaRow->addWidget(dueField, 3);
+
+    auto *bottomRow = new QHBoxLayout();
+    bottomRow->setSpacing(14);
+    m_todoBottomRow = bottomRow;
+
+    auto *tagField = new QWidget(tab);
+    auto *tagFieldLayout = new QVBoxLayout(tagField);
+    tagFieldLayout->setContentsMargins(0, 0, 0, 0);
+    tagFieldLayout->setSpacing(6);
+    tagFieldLayout->addWidget(new QLabel("标签", tagField));
+    tagFieldLayout->addWidget(m_tagInput);
+    auto *tagPresetRow = new QHBoxLayout();
+    tagPresetRow->setSpacing(10);
+    tagPresetRow->addWidget(m_tagPresetSelector, 1);
+    tagPresetRow->addWidget(addTagPresetButton);
+    tagFieldLayout->addLayout(tagPresetRow);
+
+    auto *editorActions = new QHBoxLayout();
+    editorActions->setSpacing(10);
+    editorActions->addStretch(1);
+    editorActions->addWidget(m_cancelEditButton);
+    editorActions->addWidget(m_addTodoButton);
+    auto *actionsBox = new QWidget(tab);
+    auto *actionsBoxLayout = new QVBoxLayout(actionsBox);
+    actionsBoxLayout->setContentsMargins(0, 0, 0, 0);
+    actionsBoxLayout->addLayout(editorActions);
+
+    bottomRow->addWidget(tagField, 1);
+    bottomRow->addWidget(actionsBox);
+
+    connect(addTagPresetButton, &QPushButton::clicked, this, [this]() {
+        if (m_tagPresetSelector == nullptr || m_tagInput == nullptr) {
+            return;
+        }
+
+        const QString selectedTag = m_tagPresetSelector->currentText().trimmed();
+        if (selectedTag.isEmpty()) {
+            return;
+        }
+
+        QStringList tags = collectTags();
+        bool exists = false;
+        for (const QString &tag : tags) {
+            if (QString::compare(tag, selectedTag, Qt::CaseInsensitive) == 0) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            tags.append(selectedTag);
+            m_tagInput->setText(tags.join(", "));
+        }
+    });
+
+    editorLayout->addWidget(taskField);
+    editorLayout->addLayout(metaRow);
+    editorLayout->addLayout(bottomRow);
+    editorCardLayout->addWidget(m_editorCaptionLabel);
+    editorCardLayout->addLayout(editorLayout);
+
+    auto *filterPopup = new QFrame(tab, Qt::Popup | Qt::FramelessWindowHint);
+    filterPopup->setObjectName("floatingPanel");
+    filterPopup->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+    auto *filterCardLayout = new QVBoxLayout(filterPopup);
+    filterCardLayout->setContentsMargins(16, 14, 16, 14);
+    filterCardLayout->setSpacing(10);
+
+    auto *filterCaption = new QLabel("视图与筛选", filterPopup);
+    filterCaption->setObjectName("sectionTitleSmall");
+    auto *filterLayout = new QVBoxLayout();
+    filterLayout->setSpacing(10);
+
+    auto *filterTopRow = new QHBoxLayout();
+    filterTopRow->setSpacing(12);
+    filterTopRow->addWidget(new QLabel("视图", filterPopup));
+    m_viewModeFilter = new RoundedComboBox(filterPopup);
+    m_viewModeFilter->setObjectName("filterCombo");
+    m_viewModeFilter->addItem("今日视图", static_cast<int>(TodoListMode::Today));
+    m_viewModeFilter->addItem("全部任务", static_cast<int>(TodoListMode::All));
+    m_viewModeFilter->addItem("已完成归档", static_cast<int>(TodoListMode::Archive));
+    configureComboBox(m_viewModeFilter, 138);
+    filterTopRow->addWidget(m_viewModeFilter);
+
+    filterTopRow->addWidget(new QLabel("筛选优先级", filterPopup));
+    m_priorityFilter = new RoundedComboBox(filterPopup);
+    m_priorityFilter->setObjectName("filterCombo");
+    m_priorityFilter->addItem("全部", -1);
+    m_priorityFilter->addItem("高", static_cast<int>(TaskPriority::High));
+    m_priorityFilter->addItem("中", static_cast<int>(TaskPriority::Medium));
+    m_priorityFilter->addItem("低", static_cast<int>(TaskPriority::Low));
+    configureComboBox(m_priorityFilter, 108);
+    filterTopRow->addWidget(m_priorityFilter);
+    filterTopRow->addStretch(1);
+
+    auto *filterBottomRow = new QHBoxLayout();
+    filterBottomRow->setSpacing(12);
+    filterBottomRow->addWidget(new QLabel("标签", filterPopup));
+    m_tagFilterInput = new QLineEdit(filterPopup);
+    m_tagFilterInput->setPlaceholderText("输入标签关键字");
+    filterBottomRow->addWidget(m_tagFilterInput, 1);
+
+    m_clearFilterButton = new QPushButton("清空筛选", filterPopup);
+    m_clearFilterButton->setObjectName("secondaryButton");
+    filterBottomRow->addWidget(m_clearFilterButton);
+    filterCardLayout->addWidget(filterCaption);
+    filterLayout->addLayout(filterTopRow);
+    filterLayout->addLayout(filterBottomRow);
+    filterCardLayout->addLayout(filterLayout);
+    m_filterPopup = filterPopup;
+
+    connect(m_filterToggleButton, &QPushButton::clicked, this, [this]() {
+        if (m_filterPopup == nullptr || m_filterToggleButton == nullptr) {
+            return;
+        }
+
+        if (m_filterPopup->isVisible()) {
+            m_filterPopup->hide();
+            return;
+        }
+
+        m_filterPopup->adjustSize();
+        const QPoint popupPos = m_filterToggleButton->mapToGlobal(
+            QPoint(m_filterToggleButton->width() - m_filterPopup->width(), m_filterToggleButton->height() + 8));
+        m_filterPopup->move(popupPos);
+        m_filterPopup->show();
+        m_filterPopup->raise();
+    });
+
+    m_todoList = new QListWidget(content);
+    m_todoList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_todoList->setWordWrap(true);
+    m_todoList->setSpacing(2);
+    m_todoList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_todoList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_todoList->verticalScrollBar()->setSingleStep(18);
+    m_todoList->setMinimumHeight(0);
+
+    layout->addLayout(headerLayout);
+    layout->addWidget(m_overdueReminderLabel);
+    contentLayout->addWidget(editorCard);
+    contentLayout->addWidget(m_todoList, 1);
+    workspaceLayout->addWidget(sidebarCard);
+    workspaceLayout->addLayout(contentLayout, 1);
+    layout->addLayout(workspaceLayout, 1);
+    layout->addStretch(1);
+
+    scrollArea->setWidget(content);
+    rootLayout->addWidget(scrollArea);
+
+    return tab;
+}
+
+QWidget *MainWindow::buildPomodoroTab() {
+    auto *tab = new QWidget(this);
+    auto *layout = new QVBoxLayout(tab);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto *scrollArea = new QScrollArea(tab);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *content = new QWidget(scrollArea);
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(18, 18, 18, 18);
+    contentLayout->setSpacing(12);
+
+    auto *bindingCard = new QFrame(content);
+    bindingCard->setObjectName("surfaceCardSoft");
+    bindingCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    bindingCard->setMinimumHeight(180);
+    auto *bindingLayout = new QVBoxLayout(bindingCard);
+    bindingLayout->setContentsMargins(16, 14, 16, 14);
+    bindingLayout->setSpacing(10);
+
+    auto *heroTitle = new QLabel("番茄钟", bindingCard);
+    heroTitle->setObjectName("sectionTitle");
+    m_cycleHintLabel = new QLabel("开始专注前先绑定当前任务，完成一个专注周期后自动记录到历史。", bindingCard);
+    m_cycleHintLabel->setObjectName("mutedText");
+    m_cycleHintLabel->setWordWrap(true);
+
+    m_pomodoroTaskSelector = new RoundedComboBox(bindingCard);
+    m_pomodoroTaskSelector->setObjectName("pomodoroField");
+    m_pomodoroTaskSelector->setMinimumHeight(44);
+
+    m_focusMinutes = new QSpinBox(bindingCard);
+    m_focusMinutes->setObjectName("pomodoroField");
+    m_focusMinutes->setRange(1, 240);
+    m_focusMinutes->setValue(25);
+    m_focusMinutes->setMinimumHeight(44);
+    m_focusMinutes->setMinimumWidth(150);
+
+    m_breakMinutes = new QSpinBox(bindingCard);
+    m_breakMinutes->setObjectName("pomodoroField");
+    m_breakMinutes->setRange(1, 120);
+    m_breakMinutes->setValue(5);
+    m_breakMinutes->setMinimumHeight(44);
+    m_breakMinutes->setMinimumWidth(150);
+
+    auto *taskFieldWrap = new QWidget(bindingCard);
+    auto *taskField = new QVBoxLayout(taskFieldWrap);
+    taskField->setContentsMargins(0, 0, 0, 0);
+    taskField->setSpacing(6);
+    taskField->addWidget(new QLabel("当前任务", taskFieldWrap));
+    taskField->addWidget(m_pomodoroTaskSelector);
+
+    auto *taskTimingWrap = new QWidget(bindingCard);
+    auto *taskTimingLayout = new QHBoxLayout(taskTimingWrap);
+    taskTimingLayout->setContentsMargins(0, 0, 0, 0);
+    taskTimingLayout->setSpacing(12);
+
+    auto *taskTimingInfoWrap = new QWidget(taskTimingWrap);
+    auto *taskTimingInfoLayout = new QVBoxLayout(taskTimingInfoWrap);
+    taskTimingInfoLayout->setContentsMargins(0, 0, 0, 0);
+    taskTimingInfoLayout->setSpacing(4);
+    m_pomodoroTaskTimingLabel = new QLabel("累计时长 00:00:00", taskTimingInfoWrap);
+    m_pomodoroTaskTimingLabel->setObjectName("sectionTitleSmall");
+    taskTimingInfoLayout->addWidget(m_pomodoroTaskTimingLabel);
+
+    m_pomodoroTaskTimingButton = new QPushButton("开始任务计时", taskTimingWrap);
+    m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+    m_pomodoroTaskTimingButton->setMinimumHeight(40);
+
+    taskTimingLayout->addWidget(taskTimingInfoWrap, 1);
+    taskTimingLayout->addWidget(m_pomodoroTaskTimingButton, 0, Qt::AlignVCenter);
+
+    auto *durationWrap = new QWidget(bindingCard);
+    auto *durationRow = new QHBoxLayout(durationWrap);
+    durationRow->setContentsMargins(0, 0, 0, 0);
+    durationRow->setSpacing(12);
+
+    auto *focusFieldWrap = new QWidget(durationWrap);
+    auto *focusField = new QVBoxLayout(focusFieldWrap);
+    focusField->setContentsMargins(0, 0, 0, 0);
+    focusField->setSpacing(6);
+    focusField->addWidget(new QLabel("专注时长", focusFieldWrap));
+    focusField->addWidget(m_focusMinutes);
+
+    auto *breakFieldWrap = new QWidget(durationWrap);
+    auto *breakField = new QVBoxLayout(breakFieldWrap);
+    breakField->setContentsMargins(0, 0, 0, 0);
+    breakField->setSpacing(6);
+    breakField->addWidget(new QLabel("休息时长", breakFieldWrap));
+    breakField->addWidget(m_breakMinutes);
+
+    durationRow->addWidget(focusFieldWrap, 1);
+    durationRow->addWidget(breakFieldWrap, 1);
+
+    auto *presetRow = new QHBoxLayout();
+    presetRow->setSpacing(8);
+    auto *presetLabel = new QLabel("预设", bindingCard);
+    presetLabel->setObjectName("mutedText");
+    m_presetBalancedButton = new QPushButton("标准 25/5", bindingCard);
+    m_presetBalancedButton->setObjectName("secondaryButton");
+    m_presetDeepFocusButton = new QPushButton("深度 50/10", bindingCard);
+    m_presetDeepFocusButton->setObjectName("secondaryButton");
+    m_presetQuickButton = new QPushButton("轻量 15/3", bindingCard);
+    m_presetQuickButton->setObjectName("secondaryButton");
+    presetRow->addWidget(presetLabel);
+    presetRow->addWidget(m_presetBalancedButton);
+    presetRow->addWidget(m_presetDeepFocusButton);
+    presetRow->addWidget(m_presetQuickButton);
+    presetRow->addStretch(1);
+
+    bindingLayout->addWidget(heroTitle);
+    bindingLayout->addWidget(m_cycleHintLabel);
+    bindingLayout->addWidget(taskFieldWrap);
+    bindingLayout->addWidget(taskTimingWrap);
+    bindingLayout->addWidget(durationWrap);
+    bindingLayout->addLayout(presetRow);
+
+    auto *dialCard = new QFrame(content);
+    dialCard->setObjectName("surfaceCard");
+    dialCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    dialCard->setMinimumHeight(420);
+    auto *dialLayout = new QVBoxLayout(dialCard);
+    dialLayout->setContentsMargins(20, 20, 20, 20);
+    dialLayout->setSpacing(0);
+
+    auto *dialStack = new QWidget(dialCard);
+    auto *dialStackLayout = new QVBoxLayout(dialStack);
+    dialStackLayout->setContentsMargins(0, 0, 0, 0);
+    dialStackLayout->setSpacing(16);
+    dialStackLayout->setAlignment(Qt::AlignHCenter);
+
+    m_pomodoroDial = new PomodoroDialWidget(dialStack);
+    m_pomodoroDial->setFixedSize(220, 220);
+    auto *phaseTitle = new QLabel("专注阶段", dialCard);
+    phaseTitle->setObjectName("phaseBadge");
+    phaseTitle->setAlignment(Qt::AlignCenter);
+    m_pomodoroPhaseLabel = phaseTitle;
+
+    auto *buttonRow = new QHBoxLayout();
+    buttonRow->setSpacing(10);
+    buttonRow->addStretch(1);
+    m_startPauseButton = new QPushButton("开始", dialCard);
+    m_startPauseButton->setObjectName("primaryButton");
+    m_startPauseButton->setMinimumHeight(38);
+    m_stopPomodoroButton = new QPushButton("停止", dialCard);
+    m_stopPomodoroButton->setObjectName("secondaryButton");
+    m_stopPomodoroButton->setMinimumHeight(38);
+    m_resetButton = new QPushButton("重置", dialCard);
+    m_resetButton->setObjectName("secondaryButton");
+    m_resetButton->setMinimumHeight(38);
+    m_pomodoroFocusCardButton = new QPushButton("沉浸卡片", dialCard);
+    m_pomodoroFocusCardButton->setObjectName("secondaryButton");
+    m_pomodoroFocusCardButton->setMinimumHeight(38);
+    buttonRow->addWidget(m_startPauseButton);
+    buttonRow->addWidget(m_stopPomodoroButton);
+    buttonRow->addWidget(m_resetButton);
+    buttonRow->addWidget(m_pomodoroFocusCardButton);
+    buttonRow->addStretch(1);
+
+    dialLayout->addStretch(1);
+    dialStackLayout->addWidget(m_pomodoroPhaseLabel, 0, Qt::AlignHCenter);
+    dialStackLayout->addWidget(m_pomodoroDial, 0, Qt::AlignHCenter);
+    dialStackLayout->addLayout(buttonRow);
+    dialLayout->addWidget(dialStack, 0, Qt::AlignHCenter);
+    dialLayout->addStretch(1);
+
+    auto *historyCard = new QFrame(content);
+    historyCard->setObjectName("surfaceCardSoft");
+    historyCard->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    historyCard->setMinimumHeight(120);
+    auto *historyLayout = new QVBoxLayout(historyCard);
+    historyLayout->setContentsMargins(16, 14, 16, 14);
+    historyLayout->setSpacing(8);
+
+    auto *historyTitle = new QLabel("今日番茄历史", historyCard);
+    historyTitle->setObjectName("sectionTitleSmall");
+    m_focusHistoryList = new QListWidget(historyCard);
+    m_focusHistoryList->setObjectName("focusHistoryList");
+    m_focusHistoryList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_focusHistoryList->setSpacing(6);
+    m_focusHistoryList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_focusHistoryList->setMaximumHeight(120);
+    historyLayout->addWidget(historyTitle);
+    historyLayout->addWidget(m_focusHistoryList);
+
+    contentLayout->addWidget(bindingCard);
+    contentLayout->addWidget(dialCard);
+    contentLayout->addWidget(historyCard);
+    contentLayout->addStretch(1);
+
+    scrollArea->setWidget(content);
+    layout->addWidget(scrollArea);
+
+    return tab;
+}
+
+QWidget *MainWindow::buildStatsTab() {
+    auto *tab = new QWidget(this);
+    auto *layout = new QVBoxLayout(tab);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto *scrollArea = new QScrollArea(tab);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *content = new QWidget(scrollArea);
+    auto *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(28, 28, 28, 28);
+    contentLayout->setSpacing(16);
+    m_statsContentLayout = contentLayout;
+
+    m_statsHeroLabel = new QLabel(content);
+    m_totalTodayLabel = new QLabel(content);
+    m_completedTodayLabel = new QLabel(content);
+    m_completionRateLabel = new QLabel(content);
+    m_focusTodayLabel = new QLabel(content);
+    m_focusWeekLabel = new QLabel(content);
+    m_taskTimingTodayLabel = new QLabel(content);
+    m_activeTaskTimingLabel = new QLabel(content);
+    m_statsFocusInsightLabel = new QLabel(content);
+    m_statsTimingInsightLabel = new QLabel(content);
+    m_statsRankingList = new QListWidget(content);
+    m_tagTimingChart = new TagAnalysisChartWidget(content);
+    m_tagFocusChart = new TagAnalysisChartWidget(content);
+
+    m_statsHeroLabel->setObjectName("statsHeroCard");
+    m_statsFocusInsightLabel->setObjectName("statsNarrativeCard");
+    m_statsTimingInsightLabel->setObjectName("statsNarrativeCard");
+    m_statsRankingList->setObjectName("statsRankingList");
+    m_tagTimingChart->setObjectName("tagAnalysisChart");
+    m_tagFocusChart->setObjectName("tagAnalysisChart");
+
+    m_statsHeroLabel->setWordWrap(true);
+    m_statsFocusInsightLabel->setWordWrap(true);
+    m_statsTimingInsightLabel->setWordWrap(true);
+    m_statsHeroLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_statsFocusInsightLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_statsTimingInsightLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_statsRankingList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_statsRankingList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_statsRankingList->setMaximumHeight(280);
+
+    auto createMetricCard = [content](const QString &title, QLabel *&valueLabel) {
+        auto *card = new QFrame(content);
+        card->setObjectName("statsMetricCard");
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(18, 16, 18, 16);
+        cardLayout->setSpacing(10);
+
+        auto *titleLabel = new QLabel(title, card);
+        titleLabel->setObjectName("statsMetricTitle");
+        titleLabel->setWordWrap(true);
+        titleLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        valueLabel = new QLabel(card);
+        valueLabel->setObjectName("statsMetricValue");
+        valueLabel->setWordWrap(true);
+        valueLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        valueLabel->setTextFormat(Qt::PlainText);
+        valueLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        cardLayout->addWidget(titleLabel);
+        cardLayout->addWidget(valueLabel);
+        return card;
+    };
+
+    auto *refreshBtn = new QPushButton("刷新统计", content);
+    refreshBtn->setObjectName("secondaryButton");
+    connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::refreshAll);
+
+    m_totalTodayCard = createMetricCard("今日任务", m_totalTodayLabel);
+    m_completedTodayCard = createMetricCard("已完成", m_completedTodayLabel);
+    m_completionRateCard = createMetricCard("完成率", m_completionRateLabel);
+    m_focusTodayCard = createMetricCard("今日番茄", m_focusTodayLabel);
+    m_focusWeekCard = createMetricCard("近 7 天番茄", m_focusWeekLabel);
+    m_taskTimingTodayCard = createMetricCard("任务计时", m_taskTimingTodayLabel);
+    m_activeTaskTimingCard = createMetricCard("当前计时任务", m_activeTaskTimingLabel);
+
+    auto *overviewGrid = new QGridLayout();
+    m_statsOverviewGrid = overviewGrid;
+
+    auto *detailGrid = new QGridLayout();
+    m_statsDetailGrid = detailGrid;
+    rebuildStatsMetricLayout();
+
+    contentLayout->addWidget(m_statsHeroLabel);
+    contentLayout->addLayout(overviewGrid);
+    contentLayout->addLayout(detailGrid);
+    contentLayout->addWidget(m_statsFocusInsightLabel);
+    contentLayout->addWidget(m_statsTimingInsightLabel);
+    contentLayout->addWidget(m_statsRankingList);
+    contentLayout->addWidget(m_tagTimingChart);
+    contentLayout->addWidget(m_tagFocusChart);
+    contentLayout->addSpacing(16);
+    contentLayout->addWidget(refreshBtn);
+    contentLayout->addStretch(1);
+
+    scrollArea->setWidget(content);
+    layout->addWidget(scrollArea);
+
+    return tab;
+}
+
+void MainWindow::addTodo() {
+    const QString title = m_todoInput->text().trimmed();
+    if (title.isEmpty()) {
+        QMessageBox::warning(this, "保存失败", "任务标题不能为空。");
+        return;
+    }
+
+    const QDate taskDate = m_taskDateInput->date();
+    const auto priority = static_cast<TaskPriority>(m_priorityInput->currentData().toInt());
+    const QDateTime dueAt = m_dueAtEnabled->isChecked() ? m_dueAtInput->dateTime() : QDateTime();
+    const QStringList tags = collectTags();
+    const bool creating = m_editingTodoId.isEmpty();
+    const bool savingOutsideSelectedDay = taskDate != m_selectedDate;
+
+    bool saved = false;
+    if (creating) {
+        saved = m_storage.addTodo(title, taskDate, priority, dueAt, tags);
+    } else {
+        const auto todoOpt = m_storage.todoById(m_editingTodoId);
+        if (!todoOpt.has_value()) {
+            QMessageBox::warning(this, "保存失败", "当前编辑的任务不存在。");
+            resetTodoForm();
+            refreshTodoList();
+            return;
+        }
+
+        TodoItem todo = *todoOpt;
+        todo.title = title;
+        todo.date = taskDate;
+        todo.priority = priority;
+        todo.dueAt = dueAt;
+        todo.tags = tags;
+        saved = m_storage.updateTodo(todo);
+    }
+
+    if (!saved) {
+        QMessageBox::warning(this, "保存失败", "无法保存任务，请重试。");
+        return;
+    }
+
+    if (creating && currentTodoListMode() == TodoListMode::Archive) {
+        m_viewModeFilter->setCurrentIndex(0);
+        m_dateNavigator->setSelectedDate(taskDate);
+    } else if (savingOutsideSelectedDay && currentTodoListMode() == TodoListMode::Today) {
+        m_dateNavigator->setSelectedDate(taskDate);
+        statusBar()->showMessage("已切换到任务日期，方便继续处理这项任务。", 4000);
+    }
+
+    resetTodoForm();
+    refreshTodoList();
+    refreshStats();
+    refreshTagPresets();
+    refreshPomodoroBindings();
+}
+
+void MainWindow::cancelTodoEdit() {
+    resetTodoForm();
+    refreshTodoList();
+}
+
+bool MainWindow::deleteTodoById(const QString &id) {
+    if (id.isEmpty()) {
+        return false;
+    }
+
+    if (!m_storage.removeTodo(id)) {
+        QMessageBox::warning(this, "删除失败", "无法删除该任务，请重试。");
+        return false;
+    }
+
+    if (m_editingTodoId == id) {
+        resetTodoForm();
+    }
+
+    refreshTodoList();
+    refreshStats();
+    refreshTagPresets();
+    refreshPomodoroBindings();
+    updateTaskTimingRefreshState();
+    return true;
+}
+
+void MainWindow::onTodoItemChanged(QListWidgetItem *item) {
+    if (m_refreshingTodoList || item == nullptr) {
+        return;
+    }
+
+    const QString id = item->data(Qt::UserRole).toString();
+    const bool completed = item->checkState() == Qt::Checked;
+
+    if (!m_storage.setTodoCompleted(id, completed)) {
+        QMessageBox::warning(this, "更新失败", "无法更新任务状态，请重试。");
+        refreshTodoList();
+        return;
+    }
+
+    refreshTodoList();
+    refreshStats();
+    refreshTagPresets();
+    refreshPomodoroBindings();
+}
+
+void MainWindow::onTodoSelectionChanged() {
+    if (m_refreshingTodoList) {
+        return;
+    }
+
+    auto *item = m_todoList->currentItem();
+    if (item == nullptr) {
+        if (!m_editingTodoId.isEmpty()) {
+            resetTodoForm();
+            refreshTodoList();
+        } else {
+            updateTodoEditorState();
+        }
+        return;
+    }
+
+    const QString id = item->data(Qt::UserRole).toString();
+    if (id == m_editingTodoId) {
+        updateTodoEditorState();
+        return;
+    }
+
+    const auto todoOpt = m_storage.todoById(id);
+    if (!todoOpt.has_value()) {
+        resetTodoForm();
+        refreshTodoList();
+        return;
+    }
+
+    populateTodoForm(*todoOpt);
+    refreshTodoList();
+}
+
+void MainWindow::toggleTodoTiming(const QString &id) {
+    if (id.isEmpty()) {
+        statusBar()->showMessage("请先在番茄钟里绑定一个任务。", 3000);
+        return;
+    }
+
+    const auto todoOpt = m_storage.todoById(id);
+    if (!todoOpt.has_value()) {
+        statusBar()->showMessage("当前任务不存在，无法切换计时。", 3000);
+        return;
+    }
+
+    const auto activeTodo = m_storage.activeTimedTodo();
+    bool success = false;
+    QString message;
+
+    if (todoOpt->timingStartedAt.isValid()) {
+        success = m_storage.stopTodoTiming(id);
+        message = success ? QString("已结束任务计时: %1").arg(todoOpt->title) : "结束任务计时失败，请重试。";
+    } else {
+        if (m_pomodoroTaskSelectionLocked) {
+            statusBar()->showMessage("番茄钟已开始，本轮任务已锁定，不能再切换到任务手动计时。", 4000);
+            return;
+        }
+
+        if (activeTodo.has_value() && activeTodo->id != id) {
+            statusBar()->showMessage(QString("请先结束任务“%1”的计时。").arg(activeTodo->title), 4000);
+            return;
+        }
+
+        success = m_storage.startTodoTiming(id);
+        message = success ? QString("已开始任务计时: %1").arg(todoOpt->title) : "开始任务计时失败，请重试。";
+    }
+
+    statusBar()->showMessage(message, success ? 2500 : 4000);
+    if (!success) {
+        return;
+    }
+
+    refreshTodoList();
+    refreshStats();
+    refreshPomodoroTaskTimingPanel();
+    updateTaskTimingRefreshState();
+}
+
+void MainWindow::updateTaskTimingRefreshState() {
+    if (m_taskTimingRefreshTimer == nullptr) {
+        return;
+    }
+
+    if (m_storage.hasActiveTodoTiming()) {
+        if (!m_taskTimingRefreshTimer->isActive()) {
+            m_taskTimingRefreshTimer->start();
+        }
+    } else {
+        m_taskTimingRefreshTimer->stop();
+    }
+}
+
+void MainWindow::togglePomodoro() {
+    if (m_storage.hasActiveTodoTiming()) {
+        statusBar()->showMessage("任务手动计时进行中，不能同时开始番茄倒计时。", 4000);
+        return;
+    }
+
+    if (m_timer.isRunning()) {
+        m_timer.pause();
+    } else {
+        m_pomodoroTaskSelectionLocked = true;
+        m_timer.start();
+    }
+
+    refreshPomodoroTaskTimingPanel();
+}
+
+void MainWindow::resetPomodoro() {
+    if (m_storage.hasActiveTodoTiming()) {
+        statusBar()->showMessage("任务手动计时进行中，当前时钟由任务计时占用。", 4000);
+        return;
+    }
+
+    m_timer.reset();
+    m_pomodoroTaskSelectionLocked = false;
+    refreshPomodoroTaskTimingPanel();
+}
+
+void MainWindow::onPomodoroTick(int remainingSeconds, PomodoroTimer::Phase phase) {
+    refreshPomodoroView(remainingSeconds, phase);
+}
+
+void MainWindow::onPomodoroPhaseCompleted(PomodoroTimer::Phase completedPhase) {
+    if (completedPhase == PomodoroTimer::Phase::Focus) {
+        const QString taskId = m_pomodoroTaskSelector->currentData().toString();
+        if (!taskId.isEmpty() && m_storage.addFocusRecord(taskId, QDateTime::currentDateTime(), m_focusMinutes->value())) {
+            statusBar()->showMessage("已完成 1 个专注番茄并计入当前任务", 3000);
+        } else if (taskId.isEmpty()) {
+            statusBar()->showMessage("当前未绑定任务，本次番茄不会写入任务记录", 3000);
+        } else {
+            statusBar()->showMessage("番茄完成，但写入任务记录失败", 3000);
+        }
+        refreshStats();
+        refreshPomodoroBindings();
+    }
+}
+
+void MainWindow::refreshAll() {
+    refreshTodoList();
+    refreshStats();
+    refreshTagPresets();
+    refreshPomodoroBindings();
+    refreshPomodoroView(m_timer.remainingSeconds(), m_timer.phase());
+    updateTaskTimingRefreshState();
+}
+
+void MainWindow::refreshTodoList() {
+    const TodoListMode mode = currentTodoListMode();
+    m_todayLabel->setText(QString("%1  ·  %2").arg(todoListModeText(mode), m_selectedDate.toString("yyyy-MM-dd ddd")));
+
+    const QList<TodoItem> allTodos = m_storage.allTodos();
+    QList<TodoItem> scopedTodos;
+    scopedTodos.reserve(allTodos.size());
+    for (const TodoItem &todo : allTodos) {
+        switch (mode) {
+        case TodoListMode::Today:
+            if (todo.date == m_selectedDate) {
+                scopedTodos.push_back(todo);
+            }
+            break;
+        case TodoListMode::All:
+            scopedTodos.push_back(todo);
+            break;
+        case TodoListMode::Archive:
+            if (todo.completed) {
+                scopedTodos.push_back(todo);
+            }
+            break;
+        }
+    }
+
+    std::sort(scopedTodos.begin(), scopedTodos.end(), [mode](const TodoItem &lhs, const TodoItem &rhs) {
+        if (mode == TodoListMode::Archive) {
+            const bool lhsHasCompletedAt = lhs.completedAt.isValid();
+            const bool rhsHasCompletedAt = rhs.completedAt.isValid();
+            if (lhsHasCompletedAt && rhsHasCompletedAt && lhs.completedAt != rhs.completedAt) {
+                return lhs.completedAt > rhs.completedAt;
+            }
+            if (lhs.date != rhs.date) {
+                return lhs.date > rhs.date;
+            }
+            if (lhs.priority != rhs.priority) {
+                return static_cast<int>(lhs.priority) > static_cast<int>(rhs.priority);
+            }
+            return QString::localeAwareCompare(lhs.title, rhs.title) < 0;
+        }
+
+        if (lhs.completed != rhs.completed) {
+            return !lhs.completed && rhs.completed;
+        }
+
+        if (lhs.priority != rhs.priority) {
+            return static_cast<int>(lhs.priority) > static_cast<int>(rhs.priority);
+        }
+
+        const bool lhsHasDueAt = lhs.dueAt.isValid();
+        const bool rhsHasDueAt = rhs.dueAt.isValid();
+        if (lhsHasDueAt != rhsHasDueAt) {
+            return lhsHasDueAt;
+        }
+
+        if (lhsHasDueAt && rhsHasDueAt && lhs.dueAt != rhs.dueAt) {
+            return lhs.dueAt < rhs.dueAt;
+        }
+
+        if (lhs.date != rhs.date) {
+            return lhs.date > rhs.date;
+        }
+
+        return QString::localeAwareCompare(lhs.title, rhs.title) < 0;
+    });
+
+    QList<TodoItem> visibleTodos;
+    visibleTodos.reserve(scopedTodos.size());
+    for (const TodoItem &todo : scopedTodos) {
+        if (matchesFilters(todo)) {
+            visibleTodos.push_back(todo);
+        }
+    }
+
+    m_todoSummaryLabel->setText(QString("显示 %1 / %2").arg(visibleTodos.size()).arg(scopedTodos.size()));
+
+    refreshOverdueReminder(allTodos);
+    refreshDateSidebar(allTodos);
+
+    const QString selectedId = m_editingTodoId.isEmpty()
+                                   ? (m_todoList->currentItem() ? m_todoList->currentItem()->data(Qt::UserRole).toString()
+                                                                : QString())
+                                   : m_editingTodoId;
+
+    m_refreshingTodoList = true;
+    m_todoList->clear();
+    QListWidgetItem *selectedItem = nullptr;
+
+    if (visibleTodos.isEmpty()) {
+        auto *emptyItem = new QListWidgetItem(m_todoList);
+        emptyItem->setFlags(Qt::NoItemFlags);
+        emptyItem->setSizeHint(QSize(0, 150));
+
+        auto *emptyCard = new QFrame(m_todoList);
+        emptyCard->setObjectName("emptyStateCard");
+        auto *emptyLayout = new QVBoxLayout(emptyCard);
+        emptyLayout->setContentsMargins(20, 20, 20, 20);
+        emptyLayout->setSpacing(8);
+
+        auto *emptyTitle = new QLabel("当前没有可显示的任务", emptyCard);
+        emptyTitle->setObjectName("emptyStateTitle");
+        emptyTitle->setAlignment(Qt::AlignCenter);
+
+        auto *emptyMeta = new QLabel("可以在上方新建任务，或调整视图与筛选条件。", emptyCard);
+        emptyMeta->setObjectName("emptyStateMeta");
+        emptyMeta->setAlignment(Qt::AlignCenter);
+        emptyMeta->setWordWrap(true);
+
+        emptyLayout->addStretch(1);
+        emptyLayout->addWidget(emptyTitle);
+        emptyLayout->addWidget(emptyMeta);
+        emptyLayout->addStretch(1);
+        m_todoList->setItemWidget(emptyItem, emptyCard);
+    } else {
+        for (const TodoItem &todo : visibleTodos) {
+            auto *item = new QListWidgetItem(m_todoList);
+            item->setData(Qt::UserRole, todo.id);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+
+            QWidget *card = createTodoCard(todo);
+            item->setSizeHint(card->sizeHint());
+            m_todoList->setItemWidget(item, card);
+
+            if (!selectedId.isEmpty() && todo.id == selectedId) {
+                selectedItem = item;
+            }
+        }
+    }
+
+    m_refreshingTodoList = false;
+
+    if (selectedItem != nullptr) {
+        m_todoList->setCurrentItem(selectedItem);
+    } else if (!m_editingTodoId.isEmpty()) {
+        resetTodoForm();
+    }
+
+    updateTodoEditorState();
+}
+
+void MainWindow::refreshStats() {
+    const TodoStats stats = m_storage.currentStats(QDate::currentDate());
+    const auto activeTodo = m_storage.activeTimedTodo();
+    const QList<TodoItem> allTodos = m_storage.allTodos();
+    const QList<TodoItem> dailyTodos = m_storage.todosForDate(QDate::currentDate());
+    struct RankedTask {
+        QString title;
+        qint64 trackedSeconds = 0;
+        int focusCount = 0;
+        bool completed = false;
+    };
+    struct TagAggregate {
+        qint64 trackedSeconds = 0;
+        int focusCount = 0;
+    };
+    QList<RankedTask> rankedTasks;
+    QMap<QString, TagAggregate> tagAggregates;
+
+    const double rate = (stats.totalToday == 0)
+                            ? 0.0
+                            : static_cast<double>(stats.completedToday) * 100.0 / static_cast<double>(stats.totalToday);
+    int activeToday = 0;
+    int overdueToday = 0;
+    int highPriorityToday = 0;
+    int focusedTaskCount = 0;
+    int topTaskFocusCount = 0;
+    qint64 topTaskTrackedSeconds = 0;
+    QString topFocusTask = "暂无";
+    QString topTimingTask = "暂无";
+    int focusMinutesToday = 0;
+    int focusMinutesWeek = 0;
+
+    for (const TodoItem &item : dailyTodos) {
+        if (!item.completed) {
+            ++activeToday;
+        }
+        if (isOverdueToday(item)) {
+            ++overdueToday;
+        }
+        if (item.priority == TaskPriority::High) {
+            ++highPriorityToday;
+        }
+    }
+
+    for (const TodoItem &item : allTodos) {
+        if (!item.focusRecords.isEmpty()) {
+            ++focusedTaskCount;
+        }
+
+        int taskFocusToday = 0;
+        int taskFocusTotal = item.focusRecords.size();
+        for (const TodoItem::FocusRecord &record : item.focusRecords) {
+            if (record.completedAt.date() == QDate::currentDate()) {
+                ++taskFocusToday;
+                focusMinutesToday += record.focusMinutes;
+            }
+            if (record.completedAt.date() >= QDate::currentDate().addDays(-6)
+                && record.completedAt.date() <= QDate::currentDate()) {
+                focusMinutesWeek += record.focusMinutes;
+            }
+        }
+
+        if (taskFocusToday > topTaskFocusCount) {
+            topTaskFocusCount = taskFocusToday;
+            topFocusTask = item.title;
+        }
+
+        const qint64 tracked = TaskStorage::effectiveTrackedSeconds(item, QDateTime::currentDateTime());
+        if (tracked > topTaskTrackedSeconds) {
+            topTaskTrackedSeconds = tracked;
+            topTimingTask = item.title;
+        }
+
+        for (const QString &tag : item.tags) {
+            TagAggregate &aggregate = tagAggregates[tag];
+            aggregate.trackedSeconds += tracked;
+            aggregate.focusCount += taskFocusTotal;
+        }
+
+        if (tracked > 0 || taskFocusTotal > 0) {
+            RankedTask rankedTask;
+            rankedTask.title = item.title;
+            rankedTask.trackedSeconds = tracked;
+            rankedTask.focusCount = taskFocusTotal;
+            rankedTask.completed = item.completed;
+            rankedTasks.push_back(rankedTask);
+        }
+    }
+
+    std::sort(rankedTasks.begin(), rankedTasks.end(), [](const RankedTask &lhs, const RankedTask &rhs) {
+        if (lhs.trackedSeconds != rhs.trackedSeconds) {
+            return lhs.trackedSeconds > rhs.trackedSeconds;
+        }
+        if (lhs.focusCount != rhs.focusCount) {
+            return lhs.focusCount > rhs.focusCount;
+        }
+        return QString::localeAwareCompare(lhs.title, rhs.title) < 0;
+    });
+
+    QList<TagAnalysisChartWidget::BarItem> tagTimingBars;
+    QList<TagAnalysisChartWidget::BarItem> tagFocusBars;
+    QStringList tagNames = tagAggregates.keys();
+    std::sort(tagNames.begin(), tagNames.end(), [&tagAggregates](const QString &lhs, const QString &rhs) {
+        if (tagAggregates[lhs].trackedSeconds != tagAggregates[rhs].trackedSeconds) {
+            return tagAggregates[lhs].trackedSeconds > tagAggregates[rhs].trackedSeconds;
+        }
+        return QString::localeAwareCompare(lhs, rhs) < 0;
+    });
+    for (int i = 0; i < qMin(6, tagNames.size()); ++i) {
+        const QString &tag = tagNames.at(i);
+        TagAnalysisChartWidget::BarItem item;
+        item.label = tag;
+        item.value = static_cast<double>(tagAggregates[tag].trackedSeconds);
+        item.displayValue = formatDuration(tagAggregates[tag].trackedSeconds);
+        tagTimingBars.push_back(item);
+    }
+    std::sort(tagNames.begin(), tagNames.end(), [&tagAggregates](const QString &lhs, const QString &rhs) {
+        if (tagAggregates[lhs].focusCount != tagAggregates[rhs].focusCount) {
+            return tagAggregates[lhs].focusCount > tagAggregates[rhs].focusCount;
+        }
+        return QString::localeAwareCompare(lhs, rhs) < 0;
+    });
+    for (int i = 0; i < qMin(6, tagNames.size()); ++i) {
+        const QString &tag = tagNames.at(i);
+        if (tagAggregates[tag].focusCount <= 0) {
+            continue;
+        }
+        TagAnalysisChartWidget::BarItem item;
+        item.label = tag;
+        item.value = static_cast<double>(tagAggregates[tag].focusCount);
+        item.displayValue = QString("%1 个").arg(tagAggregates[tag].focusCount);
+        tagFocusBars.push_back(item);
+    }
+
+    m_statsHeroLabel->setText(
+        QString("今日概览\n共 %1 项任务，完成 %2 项，剩余 %3 项，逾期 %4 项。高优先级任务 %5 项，整体完成率 %6%。")
+            .arg(stats.totalToday)
+            .arg(stats.completedToday)
+            .arg(activeToday)
+            .arg(overdueToday)
+            .arg(highPriorityToday)
+            .arg(QString::number(rate, 'f', 1)));
+
+    m_totalTodayLabel->setText(QString("%1 项").arg(stats.totalToday));
+    m_completedTodayLabel->setText(QString("%1 项").arg(stats.completedToday));
+    m_completionRateLabel->setText(QString("%1%").arg(QString::number(rate, 'f', 1)));
+    m_focusTodayLabel->setText(QString("%1 个").arg(stats.focusToday));
+    m_focusWeekLabel->setText(QString("%1 个\n%2 分钟").arg(stats.focusLast7Days).arg(focusMinutesWeek));
+    m_taskTimingTodayLabel->setText(
+        QString("今日 %1\n累计 %2")
+            .arg(formatDuration(stats.trackedSecondsToday))
+            .arg(formatDuration(stats.trackedSecondsAll)));
+
+    if (activeTodo.has_value()) {
+        m_activeTaskTimingLabel->setText(
+            QString("%1\n已持续 %2")
+                .arg(activeTodo->title, formatDuration(TaskStorage::effectiveTrackedSeconds(*activeTodo, QDateTime::currentDateTime()))));
+    } else {
+        m_activeTaskTimingLabel->setText("无");
+    }
+
+    m_statsFocusInsightLabel->setText(
+        QString("专注洞察\n今日累计专注 %1 分钟，覆盖 %2 个任务。当前最聚焦任务：%3（今日 %4 个番茄）。")
+            .arg(focusMinutesToday)
+            .arg(focusedTaskCount)
+            .arg(topFocusTask)
+            .arg(topTaskFocusCount));
+    m_statsTimingInsightLabel->setText(
+        QString("时间洞察\n当前累计投入时长最多的任务：%1（%2）。这能帮助你判断精力是否投入在真正重要的任务上。")
+            .arg(topTimingTask)
+            .arg(formatDuration(topTaskTrackedSeconds)));
+
+    if (m_statsRankingList != nullptr) {
+        m_statsRankingList->clear();
+        if (rankedTasks.isEmpty()) {
+            m_statsRankingList->addItem("任务排行榜\n暂无足够数据，先开始计时或完成几个番茄。");
+        } else {
+            const int limit = qMin(5, rankedTasks.size());
+            for (int i = 0; i < limit; ++i) {
+                const RankedTask &task = rankedTasks[i];
+                QString line = QString("#%1  %2\n累计 %3 · 番茄 %4 个")
+                                   .arg(i + 1)
+                                   .arg(task.title)
+                                   .arg(formatDuration(task.trackedSeconds))
+                                   .arg(task.focusCount);
+                if (task.completed) {
+                    line += " · 已完成";
+                }
+                m_statsRankingList->addItem(line);
+            }
+        }
+    }
+
+    if (m_tagTimingChart != nullptr) {
+        m_tagTimingChart->setChartData("标签分析 · 累计投入时长", "带标签的任务还不够多，暂无可分析数据。", tagTimingBars);
+    }
+    if (m_tagFocusChart != nullptr) {
+        m_tagFocusChart->setChartData("标签分析 · 番茄数量", "当前还没有带标签的番茄记录。", tagFocusBars);
+    }
+}
+
+void MainWindow::refreshTaskTimingUi() {
+    if (!m_storage.hasActiveTodoTiming()) {
+        updateTaskTimingRefreshState();
+        return;
+    }
+
+    refreshPomodoroTaskTimingPanel();
+    refreshPomodoroView(m_timer.remainingSeconds(), m_timer.phase());
+
+    if (m_tabs != nullptr && m_tabs->currentIndex() == 2) {
+        refreshStats();
+    }
+}
+
+void MainWindow::refreshPomodoroView(int remainingSeconds, PomodoroTimer::Phase phase) {
+    const auto activeTodo = m_storage.activeTimedTodo();
+    if (activeTodo.has_value()) {
+        const qint64 trackedSeconds = TaskStorage::effectiveTrackedSeconds(*activeTodo, QDateTime::currentDateTime());
+        const QString timeText = formatDuration(trackedSeconds);
+        m_pomodoroDial->setTimeText(timeText);
+        m_pomodoroDial->setProgress(0.0);
+        m_pomodoroPhaseLabel->setText("任务计时");
+        syncPomodoroFocusCard("任务计时", timeText, 0.0);
+        m_cycleHintLabel->setText(QString("当前正在为“%1”累计时长，结束前不能开始番茄倒计时或切换任务。").arg(activeTodo->title));
+        return;
+    }
+
+    const int totalSeconds = (phase == PomodoroTimer::Phase::Focus ? m_focusMinutes->value() : m_breakMinutes->value()) * 60;
+    const int elapsedSeconds = qMax(0, totalSeconds - remainingSeconds);
+    const double progress = totalSeconds > 0
+                                ? (static_cast<double>(elapsedSeconds) * 100.0 / static_cast<double>(totalSeconds))
+                                : 0.0;
+
+    const QString timeText = formatSeconds(remainingSeconds);
+    m_pomodoroDial->setTimeText(timeText);
+    m_pomodoroDial->setProgress(progress);
+
+    if (phase == PomodoroTimer::Phase::Focus) {
+        m_pomodoroPhaseLabel->setText("专注阶段");
+        syncPomodoroFocusCard("专注阶段", timeText, progress);
+        m_cycleHintLabel->setText("专注阶段会累计番茄统计，适合连续推进重要任务。");
+    } else {
+        m_pomodoroPhaseLabel->setText("休息阶段");
+        syncPomodoroFocusCard("休息阶段", timeText, progress);
+        m_cycleHintLabel->setText("休息阶段用于短暂恢复，结束后会自动切回专注。");
+    }
+}
+
+void MainWindow::togglePomodoroFocusCard() {
+    if (m_pomodoroFocusCard != nullptr && m_pomodoroFocusCard->isVisible()) {
+        hidePomodoroFocusCard(true);
+        return;
+    }
+
+    showPomodoroFocusCard();
+}
+
+void MainWindow::showPomodoroFocusCard() {
+    if (m_pomodoroFocusCard == nullptr) {
+        m_pomodoroFocusCard = new PomodoroFocusCard();
+        m_pomodoroFocusCard->setWindowIcon(windowIcon());
+        connect(m_pomodoroFocusCard, &PomodoroFocusCard::exitRequested, this, [this]() {
+            hidePomodoroFocusCard(true);
+        });
+        connect(m_pomodoroFocusCard, &PomodoroFocusCard::positionChanged, this, [this](const QPoint &topLeft) {
+            m_lastFocusCardTopLeft = topLeft;
+        });
+    }
+
+    refreshPomodoroView(m_timer.remainingSeconds(), m_timer.phase());
+
+    if (!m_pomodoroFocusCard->isVisible()) {
+        const QSize cardSize = m_pomodoroFocusCard->size();
+        QPoint targetTopLeft;
+        if (isVisible() && !isMinimized()) {
+            targetTopLeft = QPoint(
+                frameGeometry().center().x() - cardSize.width() / 2,
+                frameGeometry().center().y() - cardSize.height() / 2);
+        } else if (m_lastFocusCardTopLeft.x() >= 0 && m_lastFocusCardTopLeft.y() >= 0) {
+            targetTopLeft = m_lastFocusCardTopLeft;
+        } else if (QScreen *screenHandle = screen(); screenHandle != nullptr) {
+            const QRect available = screenHandle->availableGeometry();
+            targetTopLeft = QPoint(
+                available.center().x() - cardSize.width() / 2,
+                available.center().y() - cardSize.height() / 2);
+        } else {
+            targetTopLeft = QPoint(
+                frameGeometry().center().x() - cardSize.width() / 2,
+                frameGeometry().center().y() - cardSize.height() / 2);
+        }
+        m_pomodoroFocusCard->move(targetTopLeft);
+        m_lastFocusCardTopLeft = targetTopLeft;
+    }
+
+    m_pomodoroFocusCard->show();
+    m_pomodoroFocusCard->raise();
+    m_pomodoroFocusCard->activateWindow();
+    updatePomodoroFocusCardButton();
+    hide();
+    updateTrayActions();
+}
+
+void MainWindow::hidePomodoroFocusCard(bool restoreMainWindow) {
+    if (m_pomodoroFocusCard != nullptr) {
+        m_lastFocusCardTopLeft = m_pomodoroFocusCard->pos();
+        m_pomodoroFocusCard->hide();
+    }
+
+    updatePomodoroFocusCardButton();
+    if (restoreMainWindow) {
+        if (m_tabs != nullptr) {
+            m_tabs->setCurrentIndex(1);
+        }
+        move(restoredMainWindowTopLeft());
+        showNormal();
+        raise();
+        activateWindow();
+    }
+}
+
+void MainWindow::syncPomodoroFocusCard(const QString &phaseText, const QString &timeText, double progress) {
+    if (m_pomodoroFocusCard == nullptr) {
+        return;
+    }
+
+    m_pomodoroFocusCard->setPhaseText(phaseText);
+    m_pomodoroFocusCard->setTimeText(timeText);
+    m_pomodoroFocusCard->setProgress(progress);
+}
+
+void MainWindow::updatePomodoroFocusCardButton() {
+    if (m_pomodoroFocusCardButton == nullptr) {
+        return;
+    }
+
+    m_pomodoroFocusCardButton->setText(
+        m_pomodoroFocusCard != nullptr && m_pomodoroFocusCard->isVisible() ? "关闭沉浸卡片" : "沉浸卡片");
+}
+
+QPoint MainWindow::restoredMainWindowTopLeft() const {
+    if (m_pomodoroFocusCard == nullptr && (m_lastFocusCardTopLeft.x() < 0 || m_lastFocusCardTopLeft.y() < 0)) {
+        return pos();
+    }
+
+    const QPoint focusCardTopLeft = m_pomodoroFocusCard != nullptr && m_pomodoroFocusCard->isVisible()
+                                        ? m_pomodoroFocusCard->pos()
+                                        : m_lastFocusCardTopLeft;
+    if (focusCardTopLeft.x() < 0 || focusCardTopLeft.y() < 0) {
+        return pos();
+    }
+
+    const QSize mainSize = frameGeometry().size();
+    const QSize focusCardSize = m_pomodoroFocusCard != nullptr ? m_pomodoroFocusCard->size() : QSize(260, 300);
+    return QPoint(
+        focusCardTopLeft.x() + focusCardSize.width() / 2 - mainSize.width() / 2,
+        focusCardTopLeft.y() + focusCardSize.height() / 2 - mainSize.height() / 2);
+}
+
+void MainWindow::refreshPomodoroBindings() {
+    if (m_pomodoroTaskSelector != nullptr) {
+        const QString currentTaskId = m_pomodoroTaskSelector->currentData().toString();
+        const QList<TodoItem> allTodos = m_storage.allTodos();
+
+        m_pomodoroTaskSelector->blockSignals(true);
+        m_pomodoroTaskSelector->clear();
+        m_pomodoroTaskSelector->addItem("不绑定任务", QString());
+
+        for (const TodoItem &todo : allTodos) {
+            if (todo.completed) {
+                continue;
+            }
+
+            const QString label = QString("%1 · %2").arg(todo.title, todo.date.toString("MM-dd"));
+            m_pomodoroTaskSelector->addItem(label, todo.id);
+        }
+
+        int restoredIndex = 0;
+        for (int i = 0; i < m_pomodoroTaskSelector->count(); ++i) {
+            if (m_pomodoroTaskSelector->itemData(i).toString() == currentTaskId) {
+                restoredIndex = i;
+                break;
+            }
+        }
+        m_pomodoroTaskSelector->setCurrentIndex(restoredIndex);
+        m_pomodoroTaskSelector->blockSignals(false);
+    }
+
+    refreshPomodoroTaskTimingPanel();
+
+    if (m_focusHistoryList != nullptr) {
+        m_focusHistoryList->clear();
+
+        struct FocusHistoryEntry {
+            QDateTime completedAt;
+            int focusMinutes = 0;
+            QString taskTitle;
+        };
+
+        QList<FocusHistoryEntry> entries;
+        const QList<TodoItem> allTodos = m_storage.allTodos();
+        for (const TodoItem &todo : allTodos) {
+            for (const TodoItem::FocusRecord &record : todo.focusRecords) {
+                if (record.completedAt.date() != QDate::currentDate()) {
+                    continue;
+                }
+
+                FocusHistoryEntry entry;
+                entry.completedAt = record.completedAt;
+                entry.focusMinutes = record.focusMinutes;
+                entry.taskTitle = todo.title;
+                entries.push_back(entry);
+            }
+        }
+
+        std::sort(entries.begin(), entries.end(), [](const FocusHistoryEntry &lhs, const FocusHistoryEntry &rhs) {
+            return lhs.completedAt > rhs.completedAt;
+        });
+
+        for (const FocusHistoryEntry &entry : entries) {
+            QString line = entry.completedAt.toString("HH:mm");
+            if (entry.focusMinutes > 0) {
+                line += QString(" · %1 分钟").arg(entry.focusMinutes);
+            }
+            line += QString(" · %1").arg(entry.taskTitle);
+            m_focusHistoryList->addItem(line);
+        }
+
+        if (m_focusHistoryList->count() == 0) {
+            m_focusHistoryList->addItem("今天还没有完成专注周期");
+        }
+    }
+}
+
+void MainWindow::refreshTagPresets() {
+    if (m_tagPresetSelector == nullptr) {
+        return;
+    }
+
+    const QString currentText = m_tagPresetSelector->currentText();
+    const QStringList tags = m_storage.availableTags();
+
+    m_tagPresetSelector->blockSignals(true);
+    m_tagPresetSelector->clear();
+    for (const QString &tag : tags) {
+        m_tagPresetSelector->addItem(tag);
+    }
+
+    int restoredIndex = 0;
+    for (int i = 0; i < m_tagPresetSelector->count(); ++i) {
+        if (m_tagPresetSelector->itemText(i) == currentText) {
+            restoredIndex = i;
+            break;
+        }
+    }
+    if (m_tagPresetSelector->count() > 0) {
+        m_tagPresetSelector->setCurrentIndex(restoredIndex);
+    }
+    m_tagPresetSelector->blockSignals(false);
+}
+
+void MainWindow::refreshPomodoroTaskTimingPanel() {
+    if (m_pomodoroTaskSelector == nullptr || m_pomodoroTaskTimingLabel == nullptr
+        || m_pomodoroTaskTimingButton == nullptr) {
+        return;
+    }
+
+    const QString selectedTaskId = m_pomodoroTaskSelector->currentData().toString();
+    const auto selectedTodo = selectedTaskId.isEmpty() ? std::optional<TodoItem>() : m_storage.todoById(selectedTaskId);
+    const auto activeTodo = m_storage.activeTimedTodo();
+    const bool pomodoroRunning = m_timer.isRunning();
+    const bool taskSelectionLocked = m_pomodoroTaskSelectionLocked || activeTodo.has_value();
+
+    m_pomodoroTaskSelector->setEnabled(!taskSelectionLocked);
+
+    if (!selectedTodo.has_value()) {
+        m_pomodoroTaskTimingLabel->setText("累计时长 00:00:00");
+        m_pomodoroTaskTimingButton->setText("开始任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(false);
+        style()->unpolish(m_pomodoroTaskTimingButton);
+        style()->polish(m_pomodoroTaskTimingButton);
+        return;
+    }
+
+    const bool isSelectedTiming = selectedTodo->timingStartedAt.isValid();
+    const qint64 trackedSeconds = TaskStorage::effectiveTrackedSeconds(*selectedTodo, QDateTime::currentDateTime());
+    m_pomodoroTaskTimingLabel->setText(QString("累计时长 %1").arg(formatDuration(trackedSeconds)));
+
+    if (isSelectedTiming) {
+        m_pomodoroTaskTimingButton->setText("结束任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("primaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(true);
+    } else if (m_pomodoroTaskSelectionLocked) {
+        m_pomodoroTaskTimingButton->setText("开始任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(false);
+    } else if (activeTodo.has_value() && activeTodo->id != selectedTodo->id) {
+        m_pomodoroTaskTimingButton->setText("开始任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(false);
+    } else if (selectedTodo->completed) {
+        m_pomodoroTaskTimingButton->setText("开始任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(false);
+    } else {
+        m_pomodoroTaskTimingButton->setText("开始任务计时");
+        m_pomodoroTaskTimingButton->setObjectName("secondaryButton");
+        m_pomodoroTaskTimingButton->setEnabled(true);
+    }
+
+    m_startPauseButton->setEnabled(!activeTodo.has_value());
+    m_stopPomodoroButton->setEnabled(!activeTodo.has_value() && m_pomodoroTaskSelectionLocked);
+    m_resetButton->setEnabled(!activeTodo.has_value());
+    m_focusMinutes->setEnabled(!m_pomodoroTaskSelectionLocked && !activeTodo.has_value());
+    m_breakMinutes->setEnabled(!m_pomodoroTaskSelectionLocked && !activeTodo.has_value());
+    m_presetBalancedButton->setEnabled(!m_pomodoroTaskSelectionLocked && !activeTodo.has_value());
+    m_presetDeepFocusButton->setEnabled(!m_pomodoroTaskSelectionLocked && !activeTodo.has_value());
+    m_presetQuickButton->setEnabled(!m_pomodoroTaskSelectionLocked && !activeTodo.has_value());
+
+    style()->unpolish(m_pomodoroTaskTimingButton);
+    style()->polish(m_pomodoroTaskTimingButton);
+}
+
+QWidget *MainWindow::createTodoCard(const TodoItem &todo) {
+    auto *card = new QFrame(m_todoList);
+    card->setObjectName("todoCard");
+
+    QString state = "active";
+    if (isOverdueToday(todo)) {
+        state = "overdue";
+    } else if (todo.completed) {
+        state = "done";
+    }
+    card->setProperty("todoState", state);
+    card->setProperty("editingCard", todo.id == m_editingTodoId);
+
+    auto *rootLayout = new QHBoxLayout(card);
+    rootLayout->setContentsMargins(10, 10, 10, 10);
+    rootLayout->setSpacing(10);
+
+    auto *checkBox = new QCheckBox(card);
+    checkBox->setChecked(todo.completed);
+    rootLayout->addWidget(checkBox, 0, Qt::AlignVCenter);
+
+    auto *contentLayout = new QVBoxLayout();
+    contentLayout->setSpacing(6);
+
+    auto *titleRow = new QHBoxLayout();
+    titleRow->setSpacing(8);
+
+    auto *priorityBadge = new QLabel(priorityText(todo.priority), card);
+    priorityBadge->setObjectName("todoPriorityBadge");
+    switch (todo.priority) {
+    case TaskPriority::High:
+        priorityBadge->setProperty("priorityTone", "high");
+        break;
+    case TaskPriority::Low:
+        priorityBadge->setProperty("priorityTone", "low");
+        break;
+    case TaskPriority::Medium:
+    default:
+        priorityBadge->setProperty("priorityTone", "medium");
+        break;
+    }
+
+    auto *titleLabel = new QLabel(todo.title, card);
+    titleLabel->setObjectName("todoTitle");
+    titleLabel->setProperty("completed", todo.completed);
+    titleLabel->setWordWrap(true);
+    QFont titleFont = titleLabel->font();
+    titleFont.setStrikeOut(todo.completed);
+    titleFont.setItalic(todo.completed);
+    titleLabel->setFont(titleFont);
+
+    auto *stateBadge = new QLabel(card);
+    stateBadge->setObjectName("todoStateBadge");
+    if (todo.completed) {
+        stateBadge->setText("已完成");
+        stateBadge->setProperty("badgeTone", "done");
+    } else if (isOverdueToday(todo)) {
+        stateBadge->setText("已逾期");
+        stateBadge->setProperty("badgeTone", "overdue");
+    } else {
+        stateBadge->setText("进行中");
+        stateBadge->setProperty("badgeTone", "active");
+    }
+
+    titleRow->addWidget(priorityBadge, 0, Qt::AlignTop);
+    titleRow->addWidget(titleLabel, 1);
+    contentLayout->addLayout(titleRow);
+
+    auto makeChip = [card](const QString &text, const QString &tone) {
+        auto *chip = new QLabel(text, card);
+        chip->setObjectName("todoMetaChip");
+        chip->setProperty("chipTone", tone);
+        return chip;
+    };
+
+    auto *metaRow = new QHBoxLayout();
+    metaRow->setSpacing(6);
+    metaRow->addWidget(makeChip(QString("任务日 %1").arg(todo.date.toString("yyyy-MM-dd")), "neutral"));
+
+    if (todo.dueAt.isValid()) {
+        metaRow->addWidget(makeChip(QString("截止 %1").arg(todo.dueAt.toString("MM-dd HH:mm")),
+                                    isOverdueToday(todo) ? "warn" : "neutral"));
+    }
+
+    if (todo.completed && todo.completedAt.isValid()) {
+        metaRow->addWidget(makeChip(QString("完成 %1").arg(todo.completedAt.toString("MM-dd HH:mm")), "done"));
+    }
+
+    metaRow->addStretch(1);
+    contentLayout->addLayout(metaRow);
+
+    if (!todo.tags.isEmpty()) {
+        auto *tagRow = new QHBoxLayout();
+        tagRow->setSpacing(6);
+        for (const QString &tag : todo.tags) {
+            tagRow->addWidget(makeChip(tag, "tag"));
+        }
+        tagRow->addStretch(1);
+        contentLayout->addLayout(tagRow);
+    }
+
+    rootLayout->addLayout(contentLayout, 1);
+
+    if (todo.completed) {
+        stateBadge->setToolTip("任务状态：已完成");
+    } else if (isOverdueToday(todo)) {
+        stateBadge->setToolTip("任务状态：已逾期");
+    } else {
+        stateBadge->setToolTip("任务状态：进行中");
+    }
+
+    auto *actionWrap = new QWidget(card);
+    auto *actionLayout = new QHBoxLayout(actionWrap);
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(8);
+    actionLayout->setAlignment(Qt::AlignVCenter);
+    actionLayout->addWidget(stateBadge, 0, Qt::AlignVCenter);
+
+    auto *deleteButton = new QPushButton(card);
+    deleteButton->setObjectName("cardIconButton");
+    deleteButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
+    deleteButton->setIconSize(QSize(14, 14));
+    deleteButton->setFixedSize(30, 30);
+    deleteButton->setToolTip("删除任务");
+    actionLayout->addWidget(deleteButton, 0, Qt::AlignVCenter);
+    rootLayout->addWidget(actionWrap, 0, Qt::AlignVCenter);
+
+    connect(checkBox, &QCheckBox::toggled, this, [this, id = todo.id, checkBox](bool checked) {
+        if (!m_storage.setTodoCompleted(id, checked)) {
+            QSignalBlocker blocker(checkBox);
+            checkBox->setChecked(!checked);
+            QMessageBox::warning(this, "更新失败", "无法更新任务状态，请重试。");
+            return;
+        }
+
+        refreshTodoList();
+        refreshStats();
+        updateTaskTimingRefreshState();
+    });
+
+    connect(deleteButton, &QPushButton::clicked, this, [this, id = todo.id]() {
+        deleteTodoById(id);
+    });
+
+    return card;
+}
+
+void MainWindow::refreshDateSidebar(const QList<TodoItem> &allTodos) {
+    int total = 0;
+    int completed = 0;
+    for (const TodoItem &todo : allTodos) {
+        if (todo.date != m_selectedDate) {
+            continue;
+        }
+
+        ++total;
+        if (todo.completed) {
+            ++completed;
+        }
+    }
+
+    const int focusCount = m_storage.focusCountForDate(m_selectedDate);
+    m_selectedDateLabel->setText(formatDateTitle(m_selectedDate));
+    m_selectedDateMetaLabel->setText(m_selectedDate == QDate::currentDate()
+                                         ? "今天的任务与专注记录"
+                                         : QString("浏览 %1 的任务安排").arg(m_selectedDate.toString("yyyy-MM-dd")));
+    m_dayTaskCountLabel->setText(QString("任务总数\n%1 项").arg(total));
+    m_dayDoneCountLabel->setText(QString("已完成\n%1 项").arg(completed));
+    m_dayFocusCountLabel->setText(QString("番茄数\n%1 个").arg(focusCount));
+
+    refreshCalendarHighlights(allTodos);
+}
+
+void MainWindow::refreshCalendarHighlights(const QList<TodoItem> &allTodos) {
+    QTextCharFormat clearFormat;
+    for (const QDate &date : m_calendarMarkedDates) {
+        m_dateNavigator->setDateTextFormat(date, clearFormat);
+    }
+
+    QSet<QDate> allDates;
+    QSet<QDate> activeDates;
+    QSet<QDate> completedOnlyDates;
+    QSet<QDate> overdueDates;
+
+    for (const TodoItem &todo : allTodos) {
+        allDates.insert(todo.date);
+        if (todo.completed) {
+            if (!activeDates.contains(todo.date)) {
+                completedOnlyDates.insert(todo.date);
+            }
+        } else {
+            activeDates.insert(todo.date);
+            completedOnlyDates.remove(todo.date);
+            if (isOverdueToday(todo)) {
+                overdueDates.insert(todo.date);
+            }
+        }
+    }
+
+    for (const QDate &date : allDates) {
+        QTextCharFormat format;
+        format.setFontWeight(QFont::DemiBold);
+
+        if (overdueDates.contains(date)) {
+            format.setBackground(QColor("#fde0d7"));
+            format.setForeground(QColor("#9b372f"));
+        } else if (activeDates.contains(date)) {
+            format.setBackground(QColor("#eadcc8"));
+            format.setForeground(QColor("#6d5441"));
+        } else if (completedOnlyDates.contains(date)) {
+            format.setBackground(QColor("#dfe7da"));
+            format.setForeground(QColor("#5a6f57"));
+        }
+
+        m_dateNavigator->setDateTextFormat(date, format);
+    }
+
+    m_calendarMarkedDates = allDates;
+}
+
+void MainWindow::applyTheme() {
+    setStyleSheet(R"(
+        QMainWindow#HTodoWindow {
+            background: #f5f5f5;
+        }
+        QWidget {
+            background: transparent;
+            color: #191919;
+            font-size: 14px;
+        }
+        QFrame#surfaceCard {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 18px;
+        }
+        QFrame#sidebarCard {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 20px;
+        }
+        QFrame#surfaceCardSoft {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 18px;
+        }
+        QFrame#floatingPanel {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 18px;
+        }
+        QCalendarWidget QWidget {
+            alternate-background-color: #ffffff;
+            background: #ffffff;
+        }
+        QCalendarWidget QToolButton {
+            color: #191919;
+            font-weight: 700;
+            border-radius: 12px;
+            padding: 8px 12px;
+            background: #f7f7f7;
+            border: 1px solid #e6e6e6;
+        }
+        QCalendarWidget QToolButton#qt_calendar_monthbutton,
+        QCalendarWidget QToolButton#qt_calendar_yearbutton {
+            padding: 8px 24px 8px 12px;
+        }
+        QCalendarWidget QToolButton#qt_calendar_monthbutton::menu-indicator,
+        QCalendarWidget QToolButton#qt_calendar_yearbutton::menu-indicator {
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            right: 8px;
+        }
+        QCalendarWidget QToolButton:hover {
+            background: #ededed;
+        }
+        QMenu {
+            background: #ffffff;
+            color: #191919;
+            border: 1px solid #dcdcdc;
+            border-radius: 14px;
+            padding: 6px;
+        }
+        QMenu::item {
+            padding: 8px 12px;
+            border-radius: 10px;
+            margin: 1px 0;
+        }
+        QMenu::item:selected {
+            background: #eaf8f0;
+            color: #191919;
+        }
+        QCalendarWidget QMenu {
+            background: #ffffff;
+            color: #191919;
+            border: 1px solid #dcdcdc;
+            border-radius: 14px;
+        }
+        QCalendarWidget QSpinBox {
+            margin: 2px;
+            background: #ffffff;
+            border: 1px solid #dcdcdc;
+            border-radius: 8px;
+            padding: 4px 8px;
+        }
+        QCalendarWidget QAbstractItemView:enabled,
+        QCalendarWidget QTableView {
+            color: #2f3437;
+            background: #ffffff;
+            alternate-background-color: #ffffff;
+            selection-background-color: #07c160;
+            selection-color: #ffffff;
+            outline: 0;
+            font-size: 12px;
+        }
+        QCalendarWidget QTableView QHeaderView::section {
+            padding: 2px 0;
+            border: 0;
+            background: transparent;
+            color: #5f6670;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        QCalendarWidget QTableView::item {
+            padding: 2px;
+            border-radius: 8px;
+        }
+        QCalendarWidget QTableView::item:hover {
+            background: #eaf8f0;
+            color: #191919;
+        }
+        QCalendarWidget QTableView::item:selected:hover {
+            background: #06ad56;
+            color: #ffffff;
+        }
+        QTabWidget::pane {
+            border: 1px solid #e6e6e6;
+            border-radius: 20px;
+            background: #fafafa;
+            top: -1px;
+        }
+        QTabBar::tab {
+            background: #ebebeb;
+            color: #606266;
+            padding: 11px 20px;
+            margin-right: 10px;
+            border-top-left-radius: 14px;
+            border-top-right-radius: 14px;
+            font-weight: 600;
+        }
+        QTabBar::tab:selected {
+            background: #07c160;
+            color: #ffffff;
+        }
+        QLineEdit, QComboBox, QDateEdit, QDateTimeEdit, QSpinBox, QListWidget {
+            background: #ffffff;
+            border: 1px solid #dcdcdc;
+            border-radius: 14px;
+            padding: 10px 12px;
+            selection-background-color: #07c160;
+            selection-color: #ffffff;
+        }
+        QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDateTimeEdit:focus, QSpinBox:focus {
+            border: 1px solid #07c160;
+        }
+        QListWidget {
+            padding: 0;
+            outline: 0;
+            background: transparent;
+            border: 0;
+        }
+        QListWidget#focusHistoryList {
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+        QListWidget#focusHistoryList::item {
+            background: #ffffff;
+            border: 1px solid #ececec;
+            border-radius: 12px;
+            padding: 10px 12px;
+            margin: 0 0 6px 0;
+            color: #2f3437;
+        }
+        QListWidget#statsRankingList {
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+        QListWidget#statsRankingList::item {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 16px;
+            padding: 12px 14px;
+            margin: 0 0 8px 0;
+            color: #2f3437;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 10px;
+            margin: 6px 0 6px 0;
+        }
+        QScrollBar::handle:vertical {
+            background: #d7d7d7;
+            border-radius: 5px;
+            min-height: 48px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #c3c3c3;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+            background: transparent;
+            border: 0;
+        }
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+            background: transparent;
+        }
+        QComboBox, QDateEdit, QDateTimeEdit {
+            padding-right: 28px;
+        }
+        QComboBox#pomodoroField, QSpinBox#pomodoroField {
+            background: #ffffff;
+            border: 1px solid #dcdcdc;
+            border-radius: 12px;
+            padding: 8px 12px;
+        }
+        QComboBox#pomodoroField:focus, QSpinBox#pomodoroField:focus {
+            border: 1px solid #07c160;
+        }
+        QComboBox#filterCombo {
+            background: transparent;
+            border: 0;
+            border-bottom: 1px solid #d6d6d6;
+            border-radius: 0;
+            padding: 6px 18px 6px 0;
+            min-height: 24px;
+        }
+        QComboBox#filterCombo:focus {
+            border: 0;
+            border-bottom: 1px solid #07c160;
+        }
+        QComboBox#filterCombo::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            width: 18px;
+            border: 0;
+            background: transparent;
+            border-radius: 0;
+        }
+        QComboBox::drop-down, QDateEdit::drop-down, QDateTimeEdit::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 28px;
+            border: 0;
+            background: transparent;
+            border-top-right-radius: 14px;
+            border-bottom-right-radius: 14px;
+        }
+        QComboBox::down-arrow, QDateEdit::down-arrow, QDateTimeEdit::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+        }
+        QComboBox::down-arrow:on, QDateEdit::down-arrow:on, QDateTimeEdit::down-arrow:on {
+            top: 0px;
+            left: 0px;
+        }
+        QFrame#roundedComboPopup {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 14px;
+        }
+        QListWidget#roundedComboPopupList {
+            background: transparent;
+            color: #191919;
+            border: 0;
+            outline: 0;
+            padding: 6px;
+        }
+        QListWidget#roundedComboPopupList::item {
+            min-height: 28px;
+            padding: 8px 12px;
+            border-radius: 10px;
+            margin: 0;
+        }
+        QListWidget#roundedComboPopupList::item:selected {
+            background: #eaf8f0;
+            color: #191919;
+        }
+        QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+            width: 20px;
+            border: 0;
+            background: transparent;
+        }
+        QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
+            image: none;
+            width: 0px;
+            height: 0px;
+        }
+        QLineEdit:disabled, QComboBox:disabled, QDateEdit:disabled, QDateTimeEdit:disabled, QSpinBox:disabled {
+            background: #f2f2f2;
+            color: #999999;
+            border: 1px solid #e4e4e4;
+        }
+        QListWidget::item {
+            border: 0;
+            padding: 0;
+            margin: 0 0 2px 0;
+        }
+        QListWidget::item:selected {
+            background: transparent;
+            border: 0;
+            color: #191919;
+        }
+        QCheckBox::indicator {
+            width: 20px;
+            height: 20px;
+        }
+        QCheckBox::indicator:unchecked {
+            border: 2px solid #b8b8b8;
+            border-radius: 10px;
+            background: #ffffff;
+        }
+        QCheckBox::indicator:unchecked:hover {
+            border: 2px solid #07c160;
+            background: #f3fcf7;
+        }
+        QCheckBox::indicator:checked {
+            border: 2px solid #07c160;
+            border-radius: 10px;
+            background: #07c160;
+        }
+        QCheckBox::indicator:checked:hover {
+            border: 2px solid #06ad56;
+            background: #06ad56;
+        }
+        QFrame#todoCard {
+            background: #ffffff;
+            border: 1px solid #eaeaea;
+            border-radius: 18px;
+        }
+        QFrame#todoCard:hover {
+            background: #fcfcfc;
+            border: 1px solid #dcdcdc;
+        }
+        QFrame#todoCard[todoState="done"] {
+            background: #f7fbf8;
+            border: 1px solid #d9f0e2;
+        }
+        QFrame#todoCard[todoState="done"]:hover {
+            background: #f3faf5;
+            border: 1px solid #cce8d7;
+        }
+        QFrame#todoCard[todoState="overdue"] {
+            background: #fff7f7;
+            border: 1px solid #ffd6d6;
+        }
+        QFrame#todoCard[todoState="overdue"]:hover {
+            background: #fff2f2;
+            border: 1px solid #ffc7c7;
+        }
+        QFrame#todoCard[editingCard="true"] {
+            border: 2px solid #07c160;
+        }
+        QLabel#todoTitle {
+            font-size: 15px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#todoTitle[completed="true"] {
+            color: #8c8c8c;
+            text-decoration: line-through;
+        }
+        QLabel#todoPriorityBadge, QLabel#todoStateBadge, QLabel#todoMetaChip {
+            border-radius: 10px;
+            padding: 3px 8px;
+            font-weight: 700;
+        }
+        QLabel#todoPriorityBadge[priorityTone="high"] {
+            background: #ffe7e7;
+            color: #fa5151;
+        }
+        QLabel#todoPriorityBadge[priorityTone="medium"] {
+            background: #eaf8f0;
+            color: #07c160;
+        }
+        QLabel#todoPriorityBadge[priorityTone="low"] {
+            background: #f1f1f1;
+            color: #666666;
+        }
+        QLabel#todoStateBadge[badgeTone="active"] {
+            background: #eaf8f0;
+            color: #07c160;
+        }
+        QLabel#todoStateBadge[badgeTone="done"] {
+            background: #f0f9f4;
+            color: #34c759;
+        }
+        QLabel#todoStateBadge[badgeTone="overdue"] {
+            background: #ffe7e7;
+            color: #fa5151;
+        }
+        QLabel#todoMetaChip {
+            background: #f5f5f5;
+            color: #666666;
+        }
+        QLabel#todoMetaChip[chipTone="warn"] {
+            background: #ffe7e7;
+            color: #fa5151;
+        }
+        QLabel#todoMetaChip[chipTone="active"] {
+            background: #eaf8f0;
+            color: #07c160;
+        }
+        QLabel#todoMetaChip[chipTone="done"] {
+            background: #f0f9f4;
+            color: #34c759;
+        }
+        QLabel#todoMetaChip[chipTone="tag"] {
+            background: #ecf5ff;
+            color: #576b95;
+        }
+        QPushButton {
+            background: #f2f2f2;
+            border: 1px solid #e5e5e5;
+            border-radius: 14px;
+            padding: 10px 18px;
+            color: #191919;
+            font-weight: 600;
+        }
+        QPushButton:disabled {
+            background: #f2f2f2;
+            color: #a0a0a0;
+            border: 1px solid #ebebeb;
+        }
+        QPushButton:hover {
+            background: #ebebeb;
+        }
+        QPushButton#primaryButton {
+            background: #07c160;
+            color: #ffffff;
+            border: 1px solid #07c160;
+        }
+        QPushButton#primaryButton:hover {
+            background: #06ad56;
+            border: 1px solid #06ad56;
+        }
+        QPushButton#secondaryButton {
+            background: #f2f2f2;
+            color: #191919;
+            border: 1px solid #e5e5e5;
+        }
+        QPushButton#secondaryButton:hover {
+            background: #ebebeb;
+        }
+        QPushButton#cardIconButton {
+            background: #fff4f3;
+            color: #fa5151;
+            border: 1px solid #ffd8d5;
+            border-radius: 10px;
+            padding: 0;
+        }
+        QPushButton#cardIconButton:hover {
+            background: #ffe8e6;
+            border: 1px solid #ffcac5;
+        }
+        QToolTip {
+            background: #fcfcfc;
+            color: #50565f;
+            border: 1px solid #f0f0f0;
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 12px;
+            font-weight: 400;
+        }
+        QLabel#pageTitle {
+            font-size: 22px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#sidebarTitle {
+            font-size: 20px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#sectionTitle {
+            font-size: 18px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#sectionTitleSmall {
+            font-size: 15px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QFrame#emptyStateCard {
+            background: #ffffff;
+            border: 1px dashed #d9d9d9;
+            border-radius: 18px;
+        }
+        QLabel#emptyStateTitle {
+            font-size: 16px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#emptyStateMeta {
+            color: #7a7a7a;
+        }
+        QLabel#summaryPill {
+            background: #eaf8f0;
+            border-radius: 16px;
+            padding: 7px 14px;
+            color: #07c160;
+            font-weight: 600;
+        }
+        QLabel#overdueBanner {
+            background: #fff1f0;
+            color: #fa5151;
+            border: 1px solid #ffd1cf;
+            border-radius: 14px;
+            padding: 10px 14px;
+            font-weight: 700;
+        }
+        QLabel#timerDisplay {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 28px;
+            color: #07c160;
+            padding: 24px;
+            font-weight: 700;
+        }
+        QLabel#phaseBadge {
+            background: #eaf8f0;
+            border-radius: 999px;
+            padding: 8px 16px;
+            color: #07c160;
+            font-weight: 700;
+        }
+        QProgressBar#pomodoroProgress {
+            background: #f1f1f1;
+            border: 0;
+            border-radius: 8px;
+            min-height: 12px;
+        }
+        QProgressBar#pomodoroProgress::chunk {
+            background: #07c160;
+            border-radius: 8px;
+        }
+        QLabel#mutedText {
+            color: #8c8c8c;
+        }
+        QFrame#statsMetricCard {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 18px;
+            min-height: 132px;
+        }
+        QLabel#statsMetricTitle {
+            color: #5f6670;
+            font-size: 13px;
+            font-weight: 700;
+        }
+        QLabel#statsMetricValue {
+            color: #191919;
+            font-size: 24px;
+            font-weight: 700;
+            padding: 0;
+            margin: 0;
+        }
+        QLabel#statsHeroCard {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f3fbf6, stop:1 #eef6ff);
+            border: 1px solid #d9ebe0;
+            border-radius: 22px;
+            padding: 22px 24px;
+            font-size: 20px;
+            font-weight: 700;
+            color: #1f2d24;
+            min-height: 118px;
+        }
+        QLabel#statsNarrativeCard {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 18px;
+            padding: 18px 20px;
+            font-size: 15px;
+            font-weight: 600;
+            color: #30343a;
+            min-height: 128px;
+        }
+        QLabel#sidebarStatCard {
+            background: #f8f8f8;
+            border: 1px solid #e8e8e8;
+            border-radius: 16px;
+            padding: 12px 14px;
+            min-height: 52px;
+            font-size: 14px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QStatusBar {
+            background: #fafafa;
+            color: #8c8c8c;
+            border-top: 1px solid #e8e8e8;
+        }
+    )");
+
+    QTextCharFormat weekdayFormat;
+    weekdayFormat.setForeground(QColor("#2f3437"));
+    QTextCharFormat weekendFormat;
+    weekendFormat.setForeground(QColor("#576b95"));
+    QTextCharFormat headerFormat;
+    headerFormat.setForeground(QColor("#8c8c8c"));
+    headerFormat.setFontWeight(QFont::DemiBold);
+
+    m_dateNavigator->setHeaderTextFormat(headerFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Monday, weekdayFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Tuesday, weekdayFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Wednesday, weekdayFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Thursday, weekdayFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Friday, weekdayFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Saturday, weekendFormat);
+    m_dateNavigator->setWeekdayTextFormat(Qt::Sunday, weekendFormat);
+}
+
+QString MainWindow::formatSeconds(int totalSeconds) {
+    if (totalSeconds < 0) {
+        totalSeconds = 0;
+    }
+
+    const int minutes = totalSeconds / 60;
+    const int seconds = totalSeconds % 60;
+
+    return QString("%1:%2")
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+}
+
+QString MainWindow::formatDuration(qint64 totalSeconds) {
+    if (totalSeconds < 0) {
+        totalSeconds = 0;
+    }
+
+    const qint64 hours = totalSeconds / 3600;
+    const qint64 minutes = (totalSeconds % 3600) / 60;
+    const qint64 seconds = totalSeconds % 60;
+
+    return QString("%1:%2:%3")
+        .arg(hours, 2, 10, QChar('0'))
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+}
+
+QString MainWindow::phaseText(PomodoroTimer::Phase phase) {
+    return phase == PomodoroTimer::Phase::Focus ? "专注" : "休息";
+}
+
+void MainWindow::populateTodoForm(const TodoItem &todo) {
+    m_editingTodoId = todo.id;
+    m_taskDateInput->setDate(todo.date);
+    m_todoInput->setText(todo.title);
+
+    for (int i = 0; i < m_priorityInput->count(); ++i) {
+        if (m_priorityInput->itemData(i).toInt() == static_cast<int>(todo.priority)) {
+            m_priorityInput->setCurrentIndex(i);
+            break;
+        }
+    }
+
+    m_dueAtEnabled->setChecked(todo.dueAt.isValid());
+    m_dueAtInput->setDateTime(todo.dueAt.isValid() ? todo.dueAt : QDateTime::currentDateTime());
+    m_tagInput->setText(todo.tags.join(", "));
+    updateTodoEditorState();
+}
+
+void MainWindow::resetTodoForm() {
+    m_editingTodoId.clear();
+    m_taskDateInput->setDate(m_selectedDate);
+    m_todoInput->clear();
+    m_priorityInput->setCurrentIndex(1);
+    m_dueAtEnabled->setChecked(false);
+    m_dueAtInput->setDateTime(QDateTime::currentDateTime());
+    m_tagInput->clear();
+    m_todoList->clearSelection();
+    updateTodoEditorState();
+}
+
+void MainWindow::refreshOverdueReminder(const QList<TodoItem> &todos) {
+    int overdueCount = 0;
+    for (const TodoItem &todo : todos) {
+        if (isOverdueToday(todo)) {
+            ++overdueCount;
+        }
+    }
+
+    if (overdueCount > 0) {
+        m_overdueReminderLabel->setText(QString("当前有 %1 个任务已逾期，请尽快处理。").arg(overdueCount));
+        m_overdueReminderLabel->setVisible(true);
+        if (overdueCount != m_lastOverdueCount) {
+            statusBar()->showMessage(QString("提醒: 当前有 %1 个逾期任务").arg(overdueCount), 5000);
+        }
+    } else {
+        m_overdueReminderLabel->clear();
+        m_overdueReminderLabel->setVisible(false);
+    }
+
+    m_lastOverdueCount = overdueCount;
+}
+
+void MainWindow::updateTodoEditorState() {
+    const bool editing = !m_editingTodoId.isEmpty();
+    m_addTodoButton->setText(editing ? "保存修改" : "添加");
+    m_cancelEditButton->setVisible(editing);
+    m_editorCaptionLabel->setText(editing ? "编辑任务" : "新建任务");
+}
+
+bool MainWindow::matchesFilters(const TodoItem &todo) const {
+    const int priorityFilter = m_priorityFilter->currentData().toInt();
+    if (priorityFilter >= 0 && static_cast<int>(todo.priority) != priorityFilter) {
+        return false;
+    }
+
+    const QString tagFilter = m_tagFilterInput->text().trimmed();
+    if (tagFilter.isEmpty()) {
+        return true;
+    }
+
+    for (const QString &tag : todo.tags) {
+        if (tag.contains(tagFilter, Qt::CaseInsensitive)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool MainWindow::isOverdueToday(const TodoItem &todo) const {
+    return !todo.completed && todo.dueAt.isValid() && todo.dueAt < QDateTime::currentDateTime();
+}
+
+MainWindow::TodoListMode MainWindow::currentTodoListMode() const {
+    return static_cast<TodoListMode>(m_viewModeFilter->currentData().toInt());
+}
+
+QStringList MainWindow::collectTags() const {
+    return m_tagInput->text().split(QRegularExpression("\\s*[,，]\\s*"), Qt::SkipEmptyParts);
+}
+
+QString MainWindow::priorityText(TaskPriority priority) {
+    switch (priority) {
+    case TaskPriority::High:
+        return "高";
+    case TaskPriority::Low:
+        return "低";
+    case TaskPriority::Medium:
+    default:
+        return "中";
+    }
+}
+
+QString MainWindow::todoListModeText(TodoListMode mode) {
+    switch (mode) {
+    case TodoListMode::All:
+        return "全部任务";
+    case TodoListMode::Archive:
+        return "已完成归档";
+    case TodoListMode::Today:
+    default:
+        return "单日视图";
+    }
+}
+
+QString MainWindow::windowLayoutModeText(WindowLayoutMode mode) {
+    switch (mode) {
+    case WindowLayoutMode::Compact:
+        return "紧凑模式";
+    case WindowLayoutMode::Standard:
+    default:
+        return "标准模式";
+    }
+}
+
+QString MainWindow::formatDateTitle(const QDate &date) {
+    if (date == QDate::currentDate()) {
+        return QString("今天 · %1").arg(date.toString("yyyy-MM-dd ddd"));
+    }
+
+    return date.toString("yyyy-MM-dd ddd");
+}
+
+QString MainWindow::formatTodoText(const TodoItem &todo) {
+    QStringList metaParts;
+    if (!todo.completed && todo.dueAt.isValid() && todo.dueAt < QDateTime::currentDateTime()) {
+        metaParts.push_back("已逾期");
+    }
+
+    if (todo.date != QDate::currentDate()) {
+        metaParts.push_back(QString("任务日: %1").arg(todo.date.toString("yyyy-MM-dd")));
+    }
+
+    if (todo.dueAt.isValid()) {
+        metaParts.push_back(QString("截止: %1").arg(todo.dueAt.toString("yyyy-MM-dd HH:mm")));
+    }
+
+    if (todo.completed && todo.completedAt.isValid()) {
+        metaParts.push_back(QString("完成: %1").arg(todo.completedAt.toString("yyyy-MM-dd HH:mm")));
+    }
+
+    metaParts.push_back(QString("计时: %1")
+                            .arg(formatDuration(TaskStorage::effectiveTrackedSeconds(todo, QDateTime::currentDateTime()))));
+
+    if (!todo.tags.isEmpty()) {
+        metaParts.push_back(QString("标签: %1").arg(todo.tags.join(", ")));
+    }
+
+    const QString titleLine = QString("[%1] %2").arg(priorityText(todo.priority), todo.title);
+    if (metaParts.isEmpty()) {
+        return titleLine;
+    }
+
+    return QString("%1\n%2").arg(titleLine, metaParts.join(" | "));
+}
