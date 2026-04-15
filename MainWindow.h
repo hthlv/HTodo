@@ -37,6 +37,7 @@ class QAction;
 class QMenu;
 class QLocalServer;
 class RoundedComboBox;
+class TagSelectorWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -122,11 +123,12 @@ private:
     QCheckBox *m_dailyPlanEnabled = nullptr;
     QDateEdit *m_planEndDateInput = nullptr;
     QCalendarWidget *m_planEndDatePopupCalendar = nullptr;
+    QLabel *m_planHintLabel = nullptr;
     RoundedComboBox *m_priorityInput = nullptr;
     QCheckBox *m_dueAtEnabled = nullptr;
     QDateTimeEdit *m_dueAtInput = nullptr;
     QCalendarWidget *m_dueAtPopupCalendar = nullptr;
-    QLineEdit *m_tagInput = nullptr;
+    TagSelectorWidget *m_tagEditor = nullptr;
     QPushButton *m_addTodoButton = nullptr;
     QPushButton *m_cancelEditButton = nullptr;
     QPushButton *m_filterToggleButton = nullptr;
@@ -135,13 +137,8 @@ private:
     QLineEdit *m_tagFilterInput = nullptr;
     QPushButton *m_clearFilterButton = nullptr;
     QWidget *m_filterPopup = nullptr;
-    QWidget *m_tagPopup = nullptr;
-    QScrollArea *m_tagPopupScrollArea = nullptr;
-    QWidget *m_tagPopupContent = nullptr;
-    QGridLayout *m_tagPopupGrid = nullptr;
-    QWidget *m_tagSelectedPanel = nullptr;
-    QLayout *m_tagSelectedLayout = nullptr;
     QListWidget *m_todoList = nullptr;
+    QListWidget *m_planList = nullptr;
     QScrollArea *m_todoScrollArea = nullptr;
     QVBoxLayout *m_todoContentLayout = nullptr;
     QBoxLayout *m_todoWorkspaceLayout = nullptr;
@@ -208,13 +205,13 @@ private:
     QWidget *buildStatsTab();
 
     void refreshTodoList();
+    void refreshPlanList();
     void updateTodoItemSizeHints();
     void refreshStats();
     void refreshPomodoroView(int remainingSeconds, PomodoroTimer::Phase phase);
     void refreshPomodoroBindings();
     void refreshTagPresets();
     void refreshPomodoroTaskTimingPanel();
-    void positionTagPopup();
     void updateDateFieldIndicators();
     void togglePomodoroFocusCard();
     void showPomodoroFocusCard();

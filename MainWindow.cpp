@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "RoundedComboBox.h"
+#include "TagSelectorWidget.h"
 
 #include <algorithm>
 #include <QAbstractItemView>
@@ -20,6 +21,7 @@
 #include <QFrame>
 #include <QFont>
 #include <QFontMetrics>
+#include <functional>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -49,6 +51,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QTextCharFormat>
+#include <QTimeEdit>
 #include <QAbstractSpinBox>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -155,7 +158,19 @@ private:
     int m_vSpacing;
 };
 
+class WheelBlockerFilter : public QObject {
+public:
+    explicit WheelBlockerFilter(QObject *parent = nullptr) : QObject(parent) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        Q_UNUSED(watched);
+        return event != nullptr && event->type() == QEvent::Wheel;
+    }
+};
+
 constexpr auto kSelectedTagsProperty = "selectedTags";
+
 QString appConfigDirPath() {
     const QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
     if (!configPath.isEmpty()) {
@@ -173,6 +188,24 @@ QString appConfigDirPath() {
     }
 
     return QDir::currentPath();
+}
+
+void installWheelBlocker(QWidget *widget, bool includeChildren = false) {
+    if (widget == nullptr) {
+        return;
+    }
+
+    auto *blocker = new WheelBlockerFilter(widget);
+    widget->installEventFilter(blocker);
+
+    if (!includeChildren) {
+        return;
+    }
+
+    const auto children = widget->findChildren<QWidget *>();
+    for (QWidget *child : children) {
+        child->installEventFilter(blocker);
+    }
 }
 
 bool ensureParentDir(const QString &filePath) {
@@ -235,6 +268,7 @@ void setSelectedTagsOnInput(QLineEdit *input, const QStringList &tags) {
     }
     input->setProperty(kSelectedTagsProperty, tags);
 }
+
 
 void setElidedLabelText(QLabel *label, const QString &text, int maxWidth) {
     if (label == nullptr) {
@@ -1025,15 +1059,6 @@ void MainWindow::rebuildStatsMetricLayout() {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_tagInput && event->type() == QEvent::MouseButtonPress) {
-        if (m_tagPopup != nullptr) {
-            refreshTagPresets();
-            positionTagPopup();
-            m_tagPopup->show();
-            m_tagPopup->raise();
-        }
-    }
-
     if (event->type() == QEvent::Wheel) {
         QWidget *watchedWidget = qobject_cast<QWidget *>(watched);
         const bool onCalendar = m_dateNavigator != nullptr
@@ -1088,46 +1113,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     }
 
     return QMainWindow::eventFilter(watched, event);
-}
-
-void MainWindow::positionTagPopup() {
-    if (m_tagPopup == nullptr || m_tagInput == nullptr) {
-        return;
-    }
-
-    const int popupWidth = m_tagPopup->property("preferredWidth").toInt() > 0
-                               ? m_tagPopup->property("preferredWidth").toInt()
-                               : qMax(320, m_tagInput->width());
-    m_tagPopup->setFixedWidth(popupWidth);
-    m_tagPopup->adjustSize();
-
-    const QRect anchorRect(m_tagInput->mapToGlobal(QPoint(0, 0)), m_tagInput->size());
-    QRect available = QRect(QPoint(0, 0), QSize(1280, 720));
-    if (QScreen *screenHandle = m_tagInput->screen(); screenHandle != nullptr) {
-        available = screenHandle->availableGeometry();
-    } else if (QScreen *screenHandle = screen(); screenHandle != nullptr) {
-        available = screenHandle->availableGeometry();
-    }
-
-    const QSize popupSize = m_tagPopup->size();
-    int x = anchorRect.left();
-    int y = anchorRect.bottom() + 8;
-
-    if (x + popupSize.width() > available.right() - 12) {
-        x = available.right() - popupSize.width() - 12;
-    }
-    if (x < available.left() + 12) {
-        x = available.left() + 12;
-    }
-
-    if (y + popupSize.height() > available.bottom() - 12) {
-        y = anchorRect.top() - popupSize.height() - 8;
-    }
-    if (y < available.top() + 12) {
-        y = available.top() + 12;
-    }
-
-    m_tagPopup->move(QPoint(x, y));
 }
 
 QWidget *MainWindow::buildTodoTab() {
@@ -1335,6 +1320,9 @@ QWidget *MainWindow::buildTodoTab() {
             child->installEventFilter(this);
         }
     }
+    m_planHintLabel = new QLabel("保存后会在起止日期内每天生成 1 条任务。", tab);
+    m_planHintLabel->setObjectName("mutedText");
+    m_planHintLabel->setVisible(false);
 
     m_priorityInput = new RoundedComboBox(tab);
     m_priorityInput->addItem("高", static_cast<int>(TaskPriority::High));
@@ -1351,6 +1339,7 @@ QWidget *MainWindow::buildTodoTab() {
     m_dueAtInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_dueAtInput->setEnabled(false);
     m_dueAtInput->setMinimumHeight(38);
+    installWheelBlocker(m_dueAtInput, true);
     m_dueAtInput->installEventFilter(this);
     for (QWidget *child : m_dueAtInput->findChildren<QWidget *>()) {
         child->installEventFilter(this);
@@ -1362,45 +1351,6 @@ QWidget *MainWindow::buildTodoTab() {
             child->installEventFilter(this);
         }
     }
-
-    m_tagInput = new QLineEdit(tab);
-    m_tagInput->setPlaceholderText("输入新标签，按回车或逗号确认");
-    m_tagInput->setMinimumHeight(38);
-    m_tagInput->installEventFilter(this);
-
-    auto *tagPopup = new QFrame(tab, Qt::Popup | Qt::FramelessWindowHint);
-    tagPopup->setObjectName("floatingPanel");
-    tagPopup->setAttribute(Qt::WA_TranslucentBackground, true);
-    auto *tagPopupLayout = new QVBoxLayout(tagPopup);
-    tagPopupLayout->setContentsMargins(10, 10, 10, 10);
-    tagPopupLayout->setSpacing(0);
-
-    auto *tagPopupSurface = new QFrame(tagPopup);
-    tagPopupSurface->setObjectName("floatingPanelSurface");
-    auto *tagPopupSurfaceLayout = new QVBoxLayout(tagPopupSurface);
-    tagPopupSurfaceLayout->setContentsMargins(14, 14, 14, 14);
-    tagPopupSurfaceLayout->setSpacing(10);
-
-    auto *tagPopupTitle = new QLabel("点击标签添加或取消", tagPopupSurface);
-    tagPopupTitle->setObjectName("sectionTitleSmall");
-    m_tagPopupScrollArea = new QScrollArea(tagPopupSurface);
-    m_tagPopupScrollArea->setWidgetResizable(true);
-    m_tagPopupScrollArea->setFrameShape(QFrame::NoFrame);
-    m_tagPopupScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_tagPopupScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_tagPopupScrollArea->setMaximumHeight(220);
-    m_tagPopupScrollArea->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    m_tagPopupContent = new QWidget(m_tagPopupScrollArea);
-    m_tagPopupContent->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    m_tagPopupGrid = new QGridLayout(m_tagPopupContent);
-    m_tagPopupGrid->setContentsMargins(0, 0, 20, 0);
-    m_tagPopupGrid->setHorizontalSpacing(8);
-    m_tagPopupGrid->setVerticalSpacing(8);
-    m_tagPopupScrollArea->setWidget(m_tagPopupContent);
-    tagPopupSurfaceLayout->addWidget(tagPopupTitle);
-    tagPopupSurfaceLayout->addWidget(m_tagPopupScrollArea);
-    tagPopupLayout->addWidget(tagPopupSurface);
-    m_tagPopup = tagPopup;
 
     m_addTodoButton = new QPushButton("添加", tab);
     m_addTodoButton->setObjectName("primaryButton");
@@ -1472,6 +1422,7 @@ QWidget *MainWindow::buildTodoTab() {
     planRow->addWidget(m_dailyPlanEnabled);
     planRow->addWidget(m_planEndDateInput, 1);
     planFieldLayout->addLayout(planRow);
+    planFieldLayout->addWidget(m_planHintLabel);
  
     metaRow->addWidget(dateField, 2);
     metaRow->addWidget(planField, 3);
@@ -1491,19 +1442,10 @@ QWidget *MainWindow::buildTodoTab() {
     tagFieldLayout->setContentsMargins(0, 0, 0, 0);
     tagFieldLayout->setSpacing(6);
     tagFieldLayout->addWidget(new QLabel("标签", tagField));
-    auto *tagComposerPanel = new QFrame(tagField);
-    tagComposerPanel->setObjectName("surfaceCardSoft");
-    auto *tagComposerLayout = new QVBoxLayout(tagComposerPanel);
-    tagComposerLayout->setContentsMargins(10, 10, 10, 10);
-    tagComposerLayout->setSpacing(0);
-    m_tagSelectedPanel = new QWidget(tagComposerPanel);
-    m_tagSelectedPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    m_tagSelectedLayout = new FlowLayout(m_tagSelectedPanel, 0, 8, 8);
-    m_tagInput->setMinimumWidth(220);
-    m_tagInput->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_tagSelectedLayout->addWidget(m_tagInput);
-    tagComposerLayout->addWidget(m_tagSelectedPanel);
-    tagFieldLayout->addWidget(tagComposerPanel);
+    m_tagEditor = new TagSelectorWidget(tagField);
+    m_tagEditor->setPlaceholderText("输入新标签，按回车或逗号确认");
+    m_tagEditor->setAvailableTags(m_storage.availableTags());
+    tagFieldLayout->addWidget(m_tagEditor);
 
     auto *editorActions = new QHBoxLayout();
     editorActions->setSpacing(10);
@@ -1517,38 +1459,6 @@ QWidget *MainWindow::buildTodoTab() {
 
     bottomRow->addWidget(tagField, 1);
     bottomRow->addWidget(actionsBox, 0, Qt::AlignBottom);
-
-    auto promoteManualTags = [this]() {
-        if (m_tagInput == nullptr) {
-            return;
-        }
-        const QStringList manualTags = m_tagInput->text().split(QRegularExpression("\\s*[,，]\\s*"), Qt::SkipEmptyParts);
-        if (manualTags.isEmpty()) {
-            return;
-        }
-        QStringList selectedTags = selectedTagsFromInput(m_tagInput);
-        for (const QString &tag : manualTags) {
-            bool exists = false;
-            for (const QString &existing : selectedTags) {
-                if (QString::compare(existing, tag, Qt::CaseInsensitive) == 0) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                selectedTags.append(tag.trimmed());
-            }
-        }
-        setSelectedTagsOnInput(m_tagInput, selectedTags);
-        m_tagInput->clear();
-        refreshTagPresets();
-    };
-    connect(m_tagInput, &QLineEdit::returnPressed, this, promoteManualTags);
-    connect(m_tagInput, &QLineEdit::textChanged, this, [this, promoteManualTags](const QString &text) {
-        if (text.contains(',') || text.contains(QChar(0xff0c))) {
-            promoteManualTags();
-        }
-    });
 
     standardPanelLayout->addLayout(metaRow);
     standardPanelLayout->addLayout(metaSecondaryRow);
@@ -1681,10 +1591,31 @@ QWidget *MainWindow::buildTodoTab() {
     compactSummaryLayout->addWidget(m_compactDoneCountLabel, 0, 1);
     compactSummaryLayout->addWidget(m_compactFocusCountLabel, 0, 2);
 
+    auto *planCard = new QFrame(content);
+    planCard->setObjectName("surfaceCard");
+    planCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    auto *planCardLayout = new QVBoxLayout(planCard);
+    planCardLayout->setContentsMargins(14, 14, 14, 14);
+    planCardLayout->setSpacing(8);
+    auto *planTitle = new QLabel("长期计划", planCard);
+    planTitle->setObjectName("sectionTitleSmall");
+    auto *planHint = new QLabel("每天会自动生成当天任务，可暂停/恢复。", planCard);
+    planHint->setObjectName("mutedText");
+    m_planList = new QListWidget(planCard);
+    m_planList->setSelectionMode(QAbstractItemView::NoSelection);
+    m_planList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_planList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_planList->setSpacing(6);
+    m_planList->setMaximumHeight(220);
+    planCardLayout->addWidget(planTitle);
+    planCardLayout->addWidget(planHint);
+    planCardLayout->addWidget(m_planList);
+
     layout->addLayout(headerLayout);
     layout->addWidget(m_overdueReminderLabel);
     layout->addWidget(compactDatePanel);
     contentLayout->addWidget(compactSummaryPanel);
+    contentLayout->addWidget(planCard);
     contentLayout->addWidget(m_todoList);
     contentLayout->addWidget(editorCard);
     m_todoStandardHeaderPanel = sidebarCard;
@@ -2048,7 +1979,7 @@ void MainWindow::addTodo() {
     int createdCount = 0;
     if (creating) {
         if (dailyPlanEnabled) {
-            saved = m_storage.addDailyTodoPlan(title, taskDate, planEndDate, priority, dueAt, tags, &createdCount);
+            saved = m_storage.addDailyPlan(title, taskDate, planEndDate, priority, dueAt, tags, &createdCount);
         } else {
             saved = m_storage.addTodo(title, taskDate, priority, dueAt, tags);
             createdCount = saved ? 1 : 0;
@@ -2090,12 +2021,14 @@ void MainWindow::addTodo() {
     }
 
     if (creating && dailyPlanEnabled) {
-        const int days = taskDate.daysTo(planEndDate) + 1;
-        statusBar()->showMessage(QString("已创建每日计划，共 %1 天，生成 %2 条任务。").arg(days).arg(createdCount), 4500);
+        statusBar()->showMessage(
+            QString("已创建长期计划，已生成整个区间，共 %1 条任务。").arg(createdCount),
+            4500);
     }
 
     resetTodoForm();
     refreshTodoList();
+    refreshPlanList();
     if (creating && m_todoList != nullptr) {
         m_todoList->clearSelection();
     }
@@ -2107,6 +2040,7 @@ void MainWindow::addTodo() {
 void MainWindow::cancelTodoEdit() {
     resetTodoForm();
     refreshTodoList();
+    refreshPlanList();
 }
 
 bool MainWindow::deleteTodoById(const QString &id) {
@@ -2295,7 +2229,9 @@ void MainWindow::onPomodoroPhaseCompleted(PomodoroTimer::Phase completedPhase) {
 }
 
 void MainWindow::refreshAll() {
+    m_storage.ensureDailyPlansGenerated(QDate::currentDate());
     refreshTodoList();
+    refreshPlanList();
     refreshStats();
     refreshTagPresets();
     refreshPomodoroBindings();
@@ -2474,6 +2410,334 @@ void MainWindow::refreshTodoList() {
     }
 
     updateTodoEditorState();
+}
+
+void MainWindow::refreshPlanList() {
+    if (m_planList == nullptr) {
+        return;
+    }
+
+    const QList<TodoPlan> plans = m_storage.allPlans();
+    m_planList->clear();
+    if (plans.isEmpty()) {
+        m_planList->addItem("暂无长期计划");
+    } else {
+        QList<TodoPlan> sortedPlans = plans;
+        std::sort(sortedPlans.begin(), sortedPlans.end(), [](const TodoPlan &lhs, const TodoPlan &rhs) {
+            if (lhs.paused != rhs.paused) {
+                return !lhs.paused && rhs.paused;
+            }
+            if (lhs.startDate != rhs.startDate) {
+                return lhs.startDate < rhs.startDate;
+            }
+            return QString::localeAwareCompare(lhs.title, rhs.title) < 0;
+        });
+
+        for (const TodoPlan &plan : sortedPlans) {
+            auto *item = new QListWidgetItem(m_planList);
+            item->setFlags(Qt::ItemIsEnabled);
+            item->setSizeHint(QSize(0, 72));
+
+            auto *card = new QFrame(m_planList);
+            card->setObjectName("surfaceCardSoft");
+            auto *layout = new QHBoxLayout(card);
+            layout->setContentsMargins(10, 8, 10, 8);
+            layout->setSpacing(8);
+
+            auto *textWrap = new QVBoxLayout();
+            textWrap->setContentsMargins(0, 0, 0, 0);
+            textWrap->setSpacing(2);
+            const QString title = QString("%1%2")
+                                      .arg(plan.paused ? "[暂停] " : "[进行中] ")
+                                      .arg(plan.title);
+            auto *titleLabel = new QLabel(title, card);
+            titleLabel->setObjectName("sectionTitleSmall");
+            auto *metaLabel = new QLabel(
+                QString("%1 ~ %2%3")
+                    .arg(plan.startDate.toString("yyyy-MM-dd"))
+                    .arg(plan.endDate.toString("yyyy-MM-dd"))
+                    .arg(plan.dueTime.isValid() ? QString(" · 截止 %1").arg(plan.dueTime.toString("HH:mm")) : QString()),
+                card);
+            metaLabel->setObjectName("mutedText");
+            textWrap->addWidget(titleLabel);
+            textWrap->addWidget(metaLabel);
+
+        auto *toggleButton = new QPushButton(plan.paused ? "恢复" : "暂停", card);
+        toggleButton->setObjectName("secondaryButton");
+        toggleButton->setMinimumHeight(34);
+
+        auto *editButton = new QPushButton("编辑", card);
+        editButton->setObjectName("secondaryButton");
+        editButton->setMinimumHeight(34);
+
+        auto *removeButton = new QPushButton("删除", card);
+        removeButton->setObjectName("secondaryButton");
+        removeButton->setMinimumHeight(34);
+
+        layout->addLayout(textWrap, 1);
+        layout->addWidget(toggleButton, 0, Qt::AlignVCenter);
+        layout->addWidget(editButton, 0, Qt::AlignVCenter);
+        layout->addWidget(removeButton, 0, Qt::AlignVCenter);
+
+            m_planList->setItemWidget(item, card);
+
+        connect(toggleButton, &QPushButton::clicked, this, [this, plan]() {
+            if (!m_storage.setPlanPaused(plan.id, !plan.paused)) {
+                showAppWarningDialog(this, "操作失败", "无法更新计划状态，请重试。");
+                return;
+            }
+            refreshAll();
+        });
+
+        connect(editButton, &QPushButton::clicked, this, [this, plan]() {
+            QDialog dialog(this);
+            dialog.setObjectName("planEditDialog");
+            dialog.setWindowTitle("编辑长期计划");
+            dialog.setModal(true);
+            dialog.setFixedWidth(420);
+            dialog.setStyleSheet(R"(
+                QDialog#planEditDialog {
+                    background: #f7f7f7;
+                }
+                QFrame#planEditPanel {
+                    background: #ffffff;
+                    border: 1px solid #e8e8e8;
+                    border-radius: 20px;
+                }
+                QLabel#planEditTitle {
+                    color: #191919;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                QLabel#planEditHint {
+                    color: #6b7280;
+                    font-size: 13px;
+                }
+                QLabel#planFieldLabel {
+                    color: #2f3437;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+            )");
+
+            auto *rootLayout = new QVBoxLayout(&dialog);
+            rootLayout->setContentsMargins(12, 12, 12, 12);
+            rootLayout->setSpacing(0);
+
+            auto *panel = new QFrame(&dialog);
+            panel->setObjectName("planEditPanel");
+            rootLayout->addWidget(panel);
+
+            auto *layout = new QVBoxLayout(panel);
+            layout->setContentsMargins(18, 18, 18, 18);
+            layout->setSpacing(12);
+
+            auto *headerTitle = new QLabel("编辑长期计划", panel);
+            headerTitle->setObjectName("planEditTitle");
+            auto *headerHint = new QLabel("修改计划模板，可选择是否同步历史未完成任务。", panel);
+            headerHint->setObjectName("planEditHint");
+            headerHint->setWordWrap(true);
+
+            auto *titleInput = new QLineEdit(panel);
+            titleInput->setText(plan.title);
+            titleInput->setPlaceholderText("计划标题");
+            titleInput->setMinimumHeight(40);
+
+            auto *startInput = new QDateEdit(plan.startDate, panel);
+            startInput->setDisplayFormat("yyyy-MM-dd");
+            startInput->setCalendarPopup(true);
+            startInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            startInput->setMinimumHeight(40);
+
+            auto *endInput = new QDateEdit(plan.endDate, panel);
+            endInput->setDisplayFormat("yyyy-MM-dd");
+            endInput->setCalendarPopup(true);
+            endInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            endInput->setMinimumHeight(40);
+
+            auto *priorityInput = new RoundedComboBox(panel);
+            priorityInput->addItem("高", static_cast<int>(TaskPriority::High));
+            priorityInput->addItem("中", static_cast<int>(TaskPriority::Medium));
+            priorityInput->addItem("低", static_cast<int>(TaskPriority::Low));
+            priorityInput->setMinimumHeight(40);
+            for (int idx = 0; idx < priorityInput->count(); ++idx) {
+                if (priorityInput->itemData(idx).toInt() == static_cast<int>(plan.priority)) {
+                    priorityInput->setCurrentIndex(idx);
+                    break;
+                }
+            }
+
+            auto *dueEnabled = new QCheckBox("启用截止时间", panel);
+            dueEnabled->setChecked(plan.dueTime.isValid());
+            auto *dueInput = new QTimeEdit(panel);
+            dueInput->setDisplayFormat("HH:mm");
+            dueInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            dueInput->setTime(plan.dueTime.isValid() ? plan.dueTime : QTime(18, 0));
+            dueInput->setEnabled(dueEnabled->isChecked());
+            dueInput->setMinimumHeight(40);
+            installWheelBlocker(dueInput, true);
+            connect(dueEnabled, &QCheckBox::toggled, dueInput, &QWidget::setEnabled);
+
+            auto *tagEditor = new TagSelectorWidget(panel);
+            tagEditor->setPlaceholderText("输入新标签，按回车或逗号确认");
+            tagEditor->setAvailableTags(m_storage.availableTags());
+            tagEditor->setSelectedTags(plan.tags);
+
+            auto *syncPastBox = new QCheckBox("同步历史未完成任务", panel);
+            syncPastBox->setChecked(false);
+            auto *syncPastHint = new QLabel("不勾选：只更新今天及未来未完成任务。勾选：连过去未完成的计划任务一起更新。", panel);
+            syncPastHint->setObjectName("planEditHint");
+            syncPastHint->setWordWrap(true);
+
+            auto addField = [panel, layout](const QString &labelText, QWidget *field) {
+                auto *label = new QLabel(labelText, panel);
+                label->setObjectName("planFieldLabel");
+                layout->addWidget(label);
+                layout->addWidget(field);
+            };
+
+            layout->addWidget(headerTitle);
+            layout->addWidget(headerHint);
+            addField("标题", titleInput);
+
+            auto *dateRow = new QHBoxLayout();
+            dateRow->setContentsMargins(0, 0, 0, 0);
+            dateRow->setSpacing(10);
+            auto *startWrap = new QWidget(panel);
+            auto *startWrapLayout = new QVBoxLayout(startWrap);
+            startWrapLayout->setContentsMargins(0, 0, 0, 0);
+            startWrapLayout->setSpacing(6);
+            auto *startLabel = new QLabel("开始日期", startWrap);
+            startLabel->setObjectName("planFieldLabel");
+            startWrapLayout->addWidget(startLabel);
+            startWrapLayout->addWidget(startInput);
+            auto *endWrap = new QWidget(panel);
+            auto *endWrapLayout = new QVBoxLayout(endWrap);
+            endWrapLayout->setContentsMargins(0, 0, 0, 0);
+            endWrapLayout->setSpacing(6);
+            auto *endLabel = new QLabel("结束日期", endWrap);
+            endLabel->setObjectName("planFieldLabel");
+            endWrapLayout->addWidget(endLabel);
+            endWrapLayout->addWidget(endInput);
+            dateRow->addWidget(startWrap, 1);
+            dateRow->addWidget(endWrap, 1);
+            layout->addLayout(dateRow);
+
+            auto *priorityDueRow = new QHBoxLayout();
+            priorityDueRow->setContentsMargins(0, 0, 0, 0);
+            priorityDueRow->setSpacing(10);
+            auto *priorityWrap = new QWidget(panel);
+            auto *priorityWrapLayout = new QVBoxLayout(priorityWrap);
+            priorityWrapLayout->setContentsMargins(0, 0, 0, 0);
+            priorityWrapLayout->setSpacing(6);
+            auto *priorityLabel = new QLabel("优先级", priorityWrap);
+            priorityLabel->setObjectName("planFieldLabel");
+            priorityWrapLayout->addWidget(priorityLabel);
+            priorityWrapLayout->addWidget(priorityInput);
+            auto *dueWrap = new QWidget(panel);
+            auto *dueWrapLayout = new QVBoxLayout(dueWrap);
+            dueWrapLayout->setContentsMargins(0, 0, 0, 0);
+            dueWrapLayout->setSpacing(6);
+            dueWrapLayout->addWidget(dueEnabled);
+            dueWrapLayout->addWidget(dueInput);
+            priorityDueRow->addWidget(priorityWrap, 1);
+            priorityDueRow->addWidget(dueWrap, 1);
+            layout->addLayout(priorityDueRow);
+
+            addField("标签", tagEditor);
+            layout->addWidget(syncPastBox);
+            layout->addWidget(syncPastHint);
+
+            auto *actions = new QHBoxLayout();
+            actions->setContentsMargins(0, 6, 0, 0);
+            actions->setSpacing(10);
+            actions->addStretch(1);
+            auto *cancelBtn = new QPushButton("取消", panel);
+            cancelBtn->setObjectName("secondaryButton");
+            cancelBtn->setMinimumHeight(42);
+            cancelBtn->setMinimumWidth(96);
+            auto *saveBtn = new QPushButton("保存", panel);
+            saveBtn->setObjectName("primaryButton");
+            saveBtn->setMinimumHeight(42);
+            saveBtn->setMinimumWidth(96);
+            actions->addWidget(cancelBtn);
+            actions->addWidget(saveBtn);
+            layout->addLayout(actions);
+
+            connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+            connect(saveBtn, &QPushButton::clicked, &dialog, [&dialog]() { dialog.accept(); });
+
+            if (dialog.exec() != QDialog::Accepted) {
+                return;
+            }
+
+            const QString updatedTitle = titleInput->text().trimmed();
+            const QDate updatedStart = startInput->date();
+            const QDate updatedEnd = endInput->date();
+            if (updatedTitle.isEmpty()) {
+                showAppWarningDialog(this, "保存失败", "计划标题不能为空。");
+                return;
+            }
+            if (!updatedStart.isValid() || !updatedEnd.isValid() || updatedEnd < updatedStart) {
+                showAppWarningDialog(this, "保存失败", "计划结束日期不能早于开始日期。");
+                return;
+            }
+
+            TodoPlan updated = plan;
+            updated.title = updatedTitle;
+            updated.startDate = updatedStart;
+            updated.endDate = updatedEnd;
+            updated.priority = static_cast<TaskPriority>(priorityInput->currentData().toInt());
+            updated.dueTime = dueEnabled->isChecked() ? dueInput->time() : QTime();
+            updated.tags = tagEditor->selectedTags();
+
+            if (!m_storage.updatePlan(updated, syncPastBox->isChecked())) {
+                showAppWarningDialog(this, "保存失败", "无法更新计划，请重试。");
+                return;
+            }
+
+            statusBar()->showMessage("长期计划已更新。", 2500);
+            refreshAll();
+        });
+
+            connect(removeButton, &QPushButton::clicked, this, [this, plan]() {
+                const bool confirmed = showAppDialog(
+                    this,
+                    AppDialogKind::Confirm,
+                    "删除长期计划",
+                    QString("删除计划“%1”后，将同时删除该计划自动生成的任务。是否继续？").arg(plan.title),
+                    "删除",
+                    "取消");
+                if (!confirmed) {
+                    return;
+                }
+                if (!m_storage.removePlan(plan.id)) {
+                    showAppWarningDialog(this, "删除失败", "无法删除计划，请重试。");
+                    return;
+                }
+                refreshAll();
+            });
+        }
+    }
+
+    int contentHeight = 0;
+    for (int i = 0; i < m_planList->count(); ++i) {
+        if (QListWidgetItem *item = m_planList->item(i); item != nullptr) {
+            contentHeight += item->sizeHint().height();
+        }
+    }
+    if (m_planList->count() > 1) {
+        contentHeight += (m_planList->count() - 1) * m_planList->spacing();
+    }
+
+    const int framePadding = 8;
+    const int minHeight = 52;
+    const int maxHeight = 220;
+    const int targetHeight = qBound(minHeight, contentHeight + framePadding, maxHeight);
+    m_planList->setFixedHeight(targetHeight);
+    m_planList->setVerticalScrollBarPolicy(targetHeight >= maxHeight
+                                               ? Qt::ScrollBarAsNeeded
+                                               : Qt::ScrollBarAlwaysOff);
 }
 
 void MainWindow::updateTodoItemSizeHints() {
@@ -2916,217 +3180,8 @@ void MainWindow::refreshPomodoroBindings() {
 }
 
 void MainWindow::refreshTagPresets() {
-    if (m_tagPopupGrid == nullptr || m_tagPopupContent == nullptr) {
-        return;
-    }
-
-    while (QLayoutItem *item = m_tagPopupGrid->takeAt(0)) {
-        if (QWidget *widget = item->widget(); widget != nullptr) {
-            widget->deleteLater();
-        }
-        delete item;
-    }
-
-    const QStringList tags = m_storage.availableTags();
-    const QStringList selectedTags = selectedTagsFromInput(m_tagInput);
-
-    if (m_tagSelectedLayout != nullptr && m_tagSelectedPanel != nullptr) {
-        while (QLayoutItem *item = m_tagSelectedLayout->takeAt(0)) {
-            if (QWidget *widget = item->widget(); widget != nullptr) {
-                if (widget != m_tagInput) {
-                    delete widget;
-                }
-            }
-            delete item;
-        }
-
-        for (const QString &tag : selectedTags) {
-            auto *chip = new QFrame(m_tagSelectedPanel);
-            chip->setObjectName("surfaceCardSoft");
-            auto *chipLayout = new QHBoxLayout(chip);
-            chipLayout->setContentsMargins(10, 6, 8, 6);
-            chipLayout->setSpacing(6);
-            auto *chipLabel = new QLabel(tag, chip);
-            chipLabel->setObjectName("sectionTitleSmall");
-            chipLabel->setMaximumWidth(112);
-            setElidedLabelText(chipLabel, tag, 112);
-            auto *removeButton = new QPushButton(chip);
-            removeButton->setObjectName("cardIconButton");
-            removeButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
-            removeButton->setIconSize(QSize(12, 12));
-            removeButton->setFixedSize(22, 22);
-            chipLayout->addWidget(chipLabel);
-            chipLayout->addWidget(removeButton);
-            connect(removeButton, &QPushButton::clicked, this, [this, tag]() {
-                QStringList updatedTags;
-                for (const QString &existing : selectedTagsFromInput(m_tagInput)) {
-                    if (QString::compare(existing, tag, Qt::CaseInsensitive) != 0) {
-                        updatedTags.append(existing);
-                    }
-                }
-                setSelectedTagsOnInput(m_tagInput, updatedTags);
-                refreshTagPresets();
-            });
-            m_tagSelectedLayout->addWidget(chip);
-        }
-        if (m_tagInput != nullptr) {
-            m_tagSelectedLayout->addWidget(m_tagInput);
-        }
-        m_tagSelectedPanel->setVisible(true);
-        m_tagSelectedPanel->updateGeometry();
-        m_tagSelectedPanel->adjustSize();
-        if (QWidget *parentWidget = m_tagSelectedPanel->parentWidget(); parentWidget != nullptr) {
-            parentWidget->updateGeometry();
-            parentWidget->adjustSize();
-        }
-    }
-
-    QList<QWidget *> popupChips;
-    popupChips.reserve(tags.size());
-    for (const QString &tag : tags) {
-        auto *tagChip = new QFrame(m_tagPopupContent);
-        tagChip->setObjectName("floatingTagChip");
-        tagChip->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-        bool selected = false;
-        for (const QString &existing : selectedTags) {
-            if (QString::compare(existing, tag, Qt::CaseInsensitive) == 0) {
-                selected = true;
-                break;
-            }
-        }
-        tagChip->setProperty("tagSelected", selected);
-
-        auto *tagRowLayout = new QHBoxLayout(tagChip);
-        tagRowLayout->setContentsMargins(0, 0, 0, 0);
-        tagRowLayout->setSpacing(2);
-
-        auto *tagButton = new QPushButton(tag, tagChip);
-        tagButton->setObjectName("tagChipButton");
-        tagButton->setMinimumHeight(34);
-        tagButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-        tagButton->setMaximumWidth(108);
-        setElidedButtonText(tagButton, tag, 82);
-        connect(tagButton, &QPushButton::clicked, this, [this, tag]() {
-            if (m_tagInput == nullptr) {
-                return;
-            }
-            QStringList selectedTags = selectedTagsFromInput(m_tagInput);
-            QStringList updatedTags;
-            bool removed = false;
-            for (const QString &existing : selectedTags) {
-                if (QString::compare(existing, tag, Qt::CaseInsensitive) == 0) {
-                    removed = true;
-                    continue;
-                }
-                updatedTags.append(existing);
-            }
-            if (!removed) {
-                updatedTags.append(tag);
-            }
-            setSelectedTagsOnInput(m_tagInput, updatedTags);
-            refreshTagPresets();
-            if (m_tagPopup != nullptr) {
-                positionTagPopup();
-            }
-        });
-        tagRowLayout->addWidget(tagButton, 1);
-
-        auto *deleteButton = new QPushButton(tagChip);
-        deleteButton->setObjectName("cardIconButton");
-        deleteButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
-        deleteButton->setIconSize(QSize(12, 12));
-        deleteButton->setFixedSize(22, 22);
-        deleteButton->setToolTip(QString("删除标签 %1").arg(tag));
-        connect(deleteButton, &QPushButton::clicked, this, [this, tag]() {
-            const bool confirmed = showAppDialog(this,
-                                                 AppDialogKind::Confirm,
-                                                 "删除标签",
-                                                 QString("删除标签“%1”后，会同时从所有任务中移除该标签。是否继续？").arg(tag),
-                                                 "删除",
-                                                 "取消");
-            if (!confirmed) {
-                return;
-            }
-
-            if (!m_storage.removeTag(tag)) {
-                showAppWarningDialog(this, "删除失败", "无法删除标签，请重试。");
-                return;
-            }
-
-            QStringList updatedSelectedTags;
-            for (const QString &existing : selectedTagsFromInput(m_tagInput)) {
-                if (QString::compare(existing, tag, Qt::CaseInsensitive) != 0) {
-                    updatedSelectedTags.push_back(existing);
-                }
-            }
-            setSelectedTagsOnInput(m_tagInput, updatedSelectedTags);
-            refreshTodoList();
-            refreshStats();
-            refreshPomodoroBindings();
-            refreshTagPresets();
-            statusBar()->showMessage(QString("已删除标签“%1”").arg(tag), 2500);
-        });
-        tagRowLayout->addWidget(deleteButton, 0, Qt::AlignVCenter);
-
-        popupChips.push_back(tagChip);
-    }
-
-    constexpr int columnCount = 3;
-    int maxChipWidth = 0;
-    int maxChipHeight = 0;
-    for (QWidget *chip : popupChips) {
-        if (chip == nullptr) {
-            continue;
-        }
-        chip->adjustSize();
-        const QSize chipSize = chip->sizeHint();
-        maxChipWidth = qMax(maxChipWidth, chipSize.width());
-        maxChipHeight = qMax(maxChipHeight, chipSize.height());
-    }
-
-    for (int i = 0; i < popupChips.size(); ++i) {
-        QWidget *chip = popupChips.at(i);
-        if (chip == nullptr) {
-            continue;
-        }
-        chip->setFixedWidth(maxChipWidth);
-        m_tagPopupGrid->addWidget(chip, i / columnCount, i % columnCount);
-    }
-
-    const int totalRows = qMax(1, (popupChips.size() + columnCount - 1) / columnCount);
-    const int contentWidth = columnCount * maxChipWidth
-                             + qMax(0, columnCount - 1) * m_tagPopupGrid->horizontalSpacing()
-                             + m_tagPopupGrid->contentsMargins().left()
-                             + m_tagPopupGrid->contentsMargins().right();
-    const int contentHeight = totalRows * maxChipHeight
-                              + qMax(0, totalRows - 1) * m_tagPopupGrid->verticalSpacing()
-                              + m_tagPopupGrid->contentsMargins().top()
-                              + m_tagPopupGrid->contentsMargins().bottom();
-    m_tagPopupContent->setFixedSize(contentWidth, contentHeight);
-    m_tagPopupContent->adjustSize();
-    if (m_tagPopupScrollArea != nullptr) {
-        const int visibleRows = qMin(3, totalRows);
-        const int targetHeight = qBound(40,
-                                        visibleRows * maxChipHeight + qMax(0, visibleRows - 1) * m_tagPopupGrid->verticalSpacing() + 2,
-                                        contentHeight + 2);
-        const bool needsScroll = contentHeight > targetHeight;
-        m_tagPopupScrollArea->setFixedHeight(targetHeight);
-        m_tagPopupScrollArea->setVerticalScrollBarPolicy(needsScroll
-                                                             ? Qt::ScrollBarAsNeeded
-                                                             : Qt::ScrollBarAlwaysOff);
-
-        const int scrollBarReserve = needsScroll && m_tagPopupScrollArea->verticalScrollBar() != nullptr
-                                         ? m_tagPopupScrollArea->verticalScrollBar()->sizeHint().width() + 8
-                                         : 0;
-        const int popupWidth = qMax(m_tagInput != nullptr ? m_tagInput->width() : 0,
-                                    contentWidth
-                                        + scrollBarReserve
-                                        + 16);
-        const int currentPreferredWidth = m_tagPopup->property("preferredWidth").toInt();
-        const int stableWidth = m_tagPopup->isVisible()
-                                    ? qMax(currentPreferredWidth, popupWidth)
-                                    : popupWidth;
-        m_tagPopup->setProperty("preferredWidth", stableWidth);
+    if (m_tagEditor != nullptr) {
+        m_tagEditor->setAvailableTags(m_storage.availableTags());
     }
 }
 
@@ -3275,6 +3330,9 @@ QWidget *MainWindow::createTodoCard(const TodoItem &todo) {
     auto *metaRow = new QHBoxLayout();
     metaRow->setContentsMargins(0, 0, 0, 0);
     metaRow->setSpacing(6);
+    if (!todo.sourcePlanId.isEmpty()) {
+        metaRow->addWidget(makeChip("计划任务", "tag"));
+    }
     metaRow->addWidget(makeChip(QString("任务日 %1").arg(todo.date.toString("yyyy-MM-dd")), "neutral"));
 
     if (todo.dueAt.isValid()) {
@@ -4160,8 +4218,9 @@ void MainWindow::populateTodoForm(const TodoItem &todo) {
 
     m_dueAtEnabled->setChecked(todo.dueAt.isValid());
     m_dueAtInput->setDateTime(todo.dueAt.isValid() ? todo.dueAt : QDateTime::currentDateTime());
-    m_tagInput->clear();
-    setSelectedTagsOnInput(m_tagInput, todo.tags);
+    if (m_tagEditor != nullptr) {
+        m_tagEditor->setSelectedTags(todo.tags);
+    }
     refreshTagPresets();
     updateTodoEditorState();
 }
@@ -4176,8 +4235,9 @@ void MainWindow::resetTodoForm() {
     m_priorityInput->setCurrentIndex(1);
     m_dueAtEnabled->setChecked(false);
     m_dueAtInput->setDateTime(QDateTime::currentDateTime());
-    m_tagInput->clear();
-    setSelectedTagsOnInput(m_tagInput, {});
+    if (m_tagEditor != nullptr) {
+        m_tagEditor->setSelectedTags({});
+    }
     refreshTagPresets();
     if (m_todoList != nullptr) {
         m_todoList->clearSelection();
@@ -4219,6 +4279,10 @@ void MainWindow::updateTodoEditorState() {
     if (m_planEndDateInput != nullptr) {
         m_planEndDateInput->setEnabled(!editing && m_dailyPlanEnabled != nullptr && m_dailyPlanEnabled->isChecked());
     }
+    if (m_planHintLabel != nullptr) {
+        m_planHintLabel->setText("保存后会在起止日期内每天生成 1 条任务。");
+        m_planHintLabel->setVisible(!editing && m_dailyPlanEnabled != nullptr && m_dailyPlanEnabled->isChecked());
+    }
 }
 
 bool MainWindow::matchesFilters(const TodoItem &todo) const {
@@ -4254,21 +4318,7 @@ bool MainWindow::isMinimalMode() const {
 }
 
 QStringList MainWindow::collectTags() const {
-    QStringList tags = selectedTagsFromInput(m_tagInput);
-    const QStringList manualTags = m_tagInput->text().split(QRegularExpression("\\s*[,，]\\s*"), Qt::SkipEmptyParts);
-    for (const QString &tag : manualTags) {
-        bool exists = false;
-        for (const QString &existing : tags) {
-            if (QString::compare(existing, tag, Qt::CaseInsensitive) == 0) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists) {
-            tags.append(tag);
-        }
-    }
-    return tags;
+    return m_tagEditor != nullptr ? m_tagEditor->selectedTags() : QStringList();
 }
 
 QString MainWindow::priorityText(TaskPriority priority) {

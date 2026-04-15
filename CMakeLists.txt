@@ -27,6 +27,8 @@ set(PROJECT_SOURCES
     PomodoroFocusCard.h
     RoundedComboBox.cpp
     RoundedComboBox.h
+    TagSelectorWidget.cpp
+    TagSelectorWidget.h
     PomodoroDialWidget.cpp
     PomodoroDialWidget.h
     TagAnalysisChartWidget.cpp
