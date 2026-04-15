@@ -493,6 +493,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_cancelEditButton, &QPushButton::clicked, this, &MainWindow::cancelTodoEdit);
     connect(m_todoList, &QListWidget::itemSelectionChanged, this, &MainWindow::onTodoSelectionChanged);
     connect(m_dueAtEnabled, &QCheckBox::toggled, m_dueAtInput, &QDateTimeEdit::setEnabled);
+    connect(m_dailyPlanEnabled, &QCheckBox::toggled, m_planEndDateInput, &QDateEdit::setEnabled);
+    connect(m_dailyPlanEnabled, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (enabled && m_planEndDateInput != nullptr && m_taskDateInput != nullptr
+            && m_planEndDateInput->date() < m_taskDateInput->date()) {
+            m_planEndDateInput->setDate(m_taskDateInput->date());
+        }
+    });
     connect(m_dateNavigator, &QCalendarWidget::selectionChanged, this, [this]() {
         const QDate selected = m_dateNavigator->selectedDate();
         if (!selected.isValid() || selected == m_selectedDate) {
@@ -526,6 +533,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         QDateTime dueAt = m_dueAtInput->dateTime();
         dueAt.setDate(date);
         m_dueAtInput->setDateTime(dueAt);
+    });
+    connect(m_taskDateInput, &QDateEdit::dateChanged, this, [this](const QDate &date) {
+        if (!m_dailyPlanEnabled->isChecked()) {
+            return;
+        }
+        if (m_planEndDateInput->date() < date) {
+            m_planEndDateInput->setDate(date);
+        }
     });
     connect(m_viewModeFilter, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
         refreshTodoList();
@@ -1032,18 +1047,26 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
                                         && (watched == m_dueAtPopupCalendar
                                             || (watchedWidget != nullptr
                                                 && m_dueAtPopupCalendar->isAncestorOf(watchedWidget)));
+        const bool onPlanPopupCalendar = m_planEndDatePopupCalendar != nullptr
+                                         && (watched == m_planEndDatePopupCalendar
+                                             || (watchedWidget != nullptr
+                                                 && m_planEndDatePopupCalendar->isAncestorOf(watchedWidget)));
         const bool onTaskDateInput = m_taskDateInput != nullptr
                                      && (watched == m_taskDateInput
                                          || (watchedWidget != nullptr && m_taskDateInput->isAncestorOf(watchedWidget)));
         const bool onDueAtInput = m_dueAtInput != nullptr
                                   && (watched == m_dueAtInput
                                       || (watchedWidget != nullptr && m_dueAtInput->isAncestorOf(watchedWidget)));
+        const bool onPlanDateInput = m_planEndDateInput != nullptr
+                                     && (watched == m_planEndDateInput
+                                         || (watchedWidget != nullptr
+                                             && m_planEndDateInput->isAncestorOf(watchedWidget)));
 
-        if (onTaskPopupCalendar || onDuePopupCalendar) {
+        if (onTaskPopupCalendar || onDuePopupCalendar || onPlanPopupCalendar) {
             return true;
         }
 
-        if (onCalendar || onTaskDateInput || onDueAtInput) {
+        if (onCalendar || onTaskDateInput || onDueAtInput || onPlanDateInput) {
             if (m_todoScrollArea != nullptr) {
                 auto *wheelEvent = static_cast<QWheelEvent *>(event);
                 QScrollBar *scrollBar = m_todoScrollArea->verticalScrollBar();
@@ -1294,6 +1317,25 @@ QWidget *MainWindow::buildTodoTab() {
         }
     }
 
+    m_dailyPlanEnabled = new QCheckBox("每天重复", tab);
+    m_planEndDateInput = new QDateEdit(QDate::currentDate(), tab);
+    m_planEndDateInput->setDisplayFormat("yyyy-MM-dd");
+    m_planEndDateInput->setCalendarPopup(true);
+    m_planEndDateInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_planEndDateInput->setMinimumHeight(38);
+    m_planEndDateInput->setEnabled(false);
+    m_planEndDateInput->installEventFilter(this);
+    for (QWidget *child : m_planEndDateInput->findChildren<QWidget *>()) {
+        child->installEventFilter(this);
+    }
+    m_planEndDatePopupCalendar = m_planEndDateInput->calendarWidget();
+    if (m_planEndDatePopupCalendar != nullptr) {
+        m_planEndDatePopupCalendar->installEventFilter(this);
+        for (QWidget *child : m_planEndDatePopupCalendar->findChildren<QWidget *>()) {
+            child->installEventFilter(this);
+        }
+    }
+
     m_priorityInput = new RoundedComboBox(tab);
     m_priorityInput->addItem("高", static_cast<int>(TaskPriority::High));
     m_priorityInput->addItem("中", static_cast<int>(TaskPriority::Medium));
@@ -1302,7 +1344,7 @@ QWidget *MainWindow::buildTodoTab() {
     configureComboBox(m_priorityInput, 120);
     m_priorityInput->setMinimumHeight(38);
 
-    m_dueAtEnabled = new QCheckBox("截止时间", tab);
+    m_dueAtEnabled = new QCheckBox("启用", tab);
     m_dueAtInput = new QDateTimeEdit(QDateTime::currentDateTime(), tab);
     m_dueAtInput->setDisplayFormat("yyyy-MM-dd HH:mm");
     m_dueAtInput->setCalendarPopup(true);
@@ -1394,7 +1436,7 @@ QWidget *MainWindow::buildTodoTab() {
     auto *dateFieldLayout = new QVBoxLayout(dateField);
     dateFieldLayout->setContentsMargins(0, 0, 0, 0);
     dateFieldLayout->setSpacing(4);
-    dateFieldLayout->addWidget(new QLabel("任务日期", dateField));
+    dateFieldLayout->addWidget(new QLabel("开始日期", dateField));
     dateFieldLayout->addWidget(m_taskDateInput);
 
     auto *priorityField = new QWidget(tab);
@@ -1403,18 +1445,42 @@ QWidget *MainWindow::buildTodoTab() {
     priorityFieldLayout->setSpacing(4);
     priorityFieldLayout->addWidget(new QLabel("优先级", priorityField));
     priorityFieldLayout->addWidget(m_priorityInput);
+    priorityField->setMaximumWidth(120);
 
     auto *dueField = new QWidget(tab);
     m_todoDueField = dueField;
     auto *dueFieldLayout = new QVBoxLayout(dueField);
     dueFieldLayout->setContentsMargins(0, 0, 0, 0);
     dueFieldLayout->setSpacing(4);
-    dueFieldLayout->addWidget(m_dueAtEnabled);
+    auto *dueFieldTopRow = new QHBoxLayout();
+    dueFieldTopRow->setContentsMargins(0, 0, 0, 0);
+    dueFieldTopRow->setSpacing(6);
+    dueFieldTopRow->addWidget(new QLabel("截止时间", dueField));
+    dueFieldTopRow->addWidget(m_dueAtEnabled, 0, Qt::AlignLeft);
+    dueFieldTopRow->addStretch(1);
+    dueFieldLayout->addLayout(dueFieldTopRow);
     dueFieldLayout->addWidget(m_dueAtInput);
+
+    auto *planField = new QWidget(tab);
+    auto *planFieldLayout = new QVBoxLayout(planField);
+    planFieldLayout->setContentsMargins(0, 0, 0, 0);
+    planFieldLayout->setSpacing(4);
+    planFieldLayout->addWidget(new QLabel("重复计划", planField));
+    auto *planRow = new QHBoxLayout();
+    planRow->setContentsMargins(0, 0, 0, 0);
+    planRow->setSpacing(8);
+    planRow->addWidget(m_dailyPlanEnabled);
+    planRow->addWidget(m_planEndDateInput, 1);
+    planFieldLayout->addLayout(planRow);
  
-    metaRow->addWidget(dateField, 4);
-    metaRow->addWidget(dueField, 5);
-    metaRow->addWidget(priorityField, 2);
+    metaRow->addWidget(dateField, 2);
+    metaRow->addWidget(planField, 3);
+
+    auto *metaSecondaryRow = new QHBoxLayout();
+    metaSecondaryRow->setContentsMargins(0, 0, 0, 0);
+    metaSecondaryRow->setSpacing(8);
+    metaSecondaryRow->addWidget(dueField, 1);
+    metaSecondaryRow->addWidget(priorityField, 0);
 
     auto *bottomRow = new QHBoxLayout();
     bottomRow->setSpacing(10);
@@ -1485,6 +1551,7 @@ QWidget *MainWindow::buildTodoTab() {
     });
 
     standardPanelLayout->addLayout(metaRow);
+    standardPanelLayout->addLayout(metaSecondaryRow);
     standardPanelLayout->addLayout(bottomRow);
     editorLayout->addWidget(taskField);
     editorLayout->addWidget(standardPanel);
@@ -1964,6 +2031,13 @@ void MainWindow::addTodo() {
     }
 
     const QDate taskDate = m_taskDateInput->date();
+    const bool dailyPlanEnabled = m_dailyPlanEnabled->isChecked();
+    const QDate planEndDate = dailyPlanEnabled ? m_planEndDateInput->date() : taskDate;
+    if (dailyPlanEnabled && planEndDate < taskDate) {
+        showAppWarningDialog(this, "保存失败", "计划结束日期不能早于开始日期。");
+        return;
+    }
+
     const auto priority = static_cast<TaskPriority>(m_priorityInput->currentData().toInt());
     const QDateTime dueAt = m_dueAtEnabled->isChecked() ? m_dueAtInput->dateTime() : QDateTime();
     const QStringList tags = collectTags();
@@ -1971,9 +2045,20 @@ void MainWindow::addTodo() {
     const bool savingOutsideSelectedDay = taskDate != m_selectedDate;
 
     bool saved = false;
+    int createdCount = 0;
     if (creating) {
-        saved = m_storage.addTodo(title, taskDate, priority, dueAt, tags);
+        if (dailyPlanEnabled) {
+            saved = m_storage.addDailyTodoPlan(title, taskDate, planEndDate, priority, dueAt, tags, &createdCount);
+        } else {
+            saved = m_storage.addTodo(title, taskDate, priority, dueAt, tags);
+            createdCount = saved ? 1 : 0;
+        }
     } else {
+        if (dailyPlanEnabled) {
+            showAppWarningDialog(this, "编辑限制", "当前编辑模式仅支持单条任务。请先保存当前修改，再使用“每天重复”创建计划任务。");
+            return;
+        }
+
         const auto todoOpt = m_storage.todoById(m_editingTodoId);
         if (!todoOpt.has_value()) {
             showAppWarningDialog(this, "保存失败", "当前编辑的任务不存在。");
@@ -2002,6 +2087,11 @@ void MainWindow::addTodo() {
     } else if (savingOutsideSelectedDay && currentTodoListMode() == TodoListMode::Today) {
         m_dateNavigator->setSelectedDate(taskDate);
         statusBar()->showMessage("已切换到任务日期，方便继续处理这项任务。", 4000);
+    }
+
+    if (creating && dailyPlanEnabled) {
+        const int days = taskDate.daysTo(planEndDate) + 1;
+        statusBar()->showMessage(QString("已创建每日计划，共 %1 天，生成 %2 条任务。").arg(days).arg(createdCount), 4500);
     }
 
     resetTodoForm();
@@ -4056,6 +4146,9 @@ QString MainWindow::phaseText(PomodoroTimer::Phase phase) {
 void MainWindow::populateTodoForm(const TodoItem &todo) {
     m_editingTodoId = todo.id;
     m_taskDateInput->setDate(todo.date);
+    m_dailyPlanEnabled->setChecked(false);
+    m_planEndDateInput->setDate(todo.date);
+    m_planEndDateInput->setEnabled(false);
     m_todoInput->setText(todo.title);
 
     for (int i = 0; i < m_priorityInput->count(); ++i) {
@@ -4076,6 +4169,9 @@ void MainWindow::populateTodoForm(const TodoItem &todo) {
 void MainWindow::resetTodoForm() {
     m_editingTodoId.clear();
     m_taskDateInput->setDate(m_selectedDate);
+    m_dailyPlanEnabled->setChecked(false);
+    m_planEndDateInput->setDate(m_selectedDate);
+    m_planEndDateInput->setEnabled(false);
     m_todoInput->clear();
     m_priorityInput->setCurrentIndex(1);
     m_dueAtEnabled->setChecked(false);
@@ -4117,6 +4213,12 @@ void MainWindow::updateTodoEditorState() {
     m_addTodoButton->setText(editing ? "保存修改" : "添加");
     m_cancelEditButton->setVisible(editing);
     m_editorCaptionLabel->setText(editing ? "编辑任务" : "新建任务");
+    if (m_dailyPlanEnabled != nullptr) {
+        m_dailyPlanEnabled->setEnabled(!editing);
+    }
+    if (m_planEndDateInput != nullptr) {
+        m_planEndDateInput->setEnabled(!editing && m_dailyPlanEnabled != nullptr && m_dailyPlanEnabled->isChecked());
+    }
 }
 
 bool MainWindow::matchesFilters(const TodoItem &todo) const {

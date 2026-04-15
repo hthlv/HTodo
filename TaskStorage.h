@@ -5,6 +5,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QTime>
 #include <QtGlobal>
 #include <optional>
 
@@ -58,6 +59,13 @@ public:
                  TaskPriority priority,
                  const QDateTime &dueAt,
                  const QStringList &tags);
+    bool addDailyTodoPlan(const QString &title,
+                          const QDate &startDate,
+                          const QDate &endDate,
+                          TaskPriority priority,
+                          const QDateTime &dueAtTemplate,
+                          const QStringList &tags,
+                          int *createdCount = nullptr);
     bool updateTodo(const TodoItem &todo);
     bool removeTodo(const QString &id);
     bool removeTag(const QString &tag);

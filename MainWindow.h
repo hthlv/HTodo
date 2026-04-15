@@ -119,6 +119,9 @@ private:
     QPushButton *m_nextDayButton = nullptr;
     QDateEdit *m_taskDateInput = nullptr;
     QCalendarWidget *m_taskDatePopupCalendar = nullptr;
+    QCheckBox *m_dailyPlanEnabled = nullptr;
+    QDateEdit *m_planEndDateInput = nullptr;
+    QCalendarWidget *m_planEndDatePopupCalendar = nullptr;
     RoundedComboBox *m_priorityInput = nullptr;
     QCheckBox *m_dueAtEnabled = nullptr;
     QDateTimeEdit *m_dueAtInput = nullptr;

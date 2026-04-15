@@ -348,6 +348,68 @@ bool TaskStorage::addTodo(const QString &title,
     return false;
 }
 
+bool TaskStorage::addDailyTodoPlan(const QString &title,
+                                   const QDate &startDate,
+                                   const QDate &endDate,
+                                   TaskPriority priority,
+                                   const QDateTime &dueAtTemplate,
+                                   const QStringList &tags,
+                                   int *createdCount) {
+    const QString cleaned = title.trimmed();
+    if (cleaned.isEmpty() || !startDate.isValid() || !endDate.isValid() || endDate < startDate) {
+        if (createdCount != nullptr) {
+            *createdCount = 0;
+        }
+        return false;
+    }
+
+    QList<TodoItem> plannedTodos;
+    for (QDate date = startDate; date <= endDate; date = date.addDays(1)) {
+        TodoItem item;
+        item.id = generateId();
+        item.title = cleaned;
+        item.date = date;
+        item.priority = priority;
+        item.tags = normalizeTags(tags);
+        item.completed = false;
+
+        if (dueAtTemplate.isValid()) {
+            const QTime dueTime = dueAtTemplate.time();
+            item.dueAt = QDateTime(date, dueTime);
+        }
+
+        plannedTodos.push_back(item);
+    }
+
+    if (plannedTodos.isEmpty()) {
+        if (createdCount != nullptr) {
+            *createdCount = 0;
+        }
+        return false;
+    }
+
+    const int oldCount = m_todos.size();
+    for (const TodoItem &item : plannedTodos) {
+        m_todos.push_back(item);
+    }
+    rebuildTagCatalog();
+    if (save()) {
+        if (createdCount != nullptr) {
+            *createdCount = plannedTodos.size();
+        }
+        return true;
+    }
+
+    while (m_todos.size() > oldCount) {
+        m_todos.removeLast();
+    }
+    rebuildTagCatalog();
+    if (createdCount != nullptr) {
+        *createdCount = 0;
+    }
+    return false;
+}
+
 bool TaskStorage::updateTodo(const TodoItem &todo) {
     if (todo.id.isEmpty() || todo.title.trimmed().isEmpty() || !todo.date.isValid()) {
         return false;
