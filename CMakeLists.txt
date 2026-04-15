@@ -15,37 +15,24 @@ set(APP_ICON_SVG "${CMAKE_CURRENT_SOURCE_DIR}/icons/htodo.svg")
 set(APP_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/icons/htodo.png")
 set(APP_ICON_PNG_SIZES 64 128 256)
 
-set(PROJECT_SOURCES
-    main.cpp
-    MainWindow.cpp
-    MainWindow.h
-    TaskStorage.cpp
-    TaskStorage.h
-    PomodoroTimer.cpp
-    PomodoroTimer.h
-    PomodoroFocusCard.cpp
-    PomodoroFocusCard.h
-    RoundedComboBox.cpp
-    RoundedComboBox.h
-    TagSelectorWidget.cpp
-    TagSelectorWidget.h
-    PomodoroDialWidget.cpp
-    PomodoroDialWidget.h
-    TagAnalysisChartWidget.cpp
-    TagAnalysisChartWidget.h
-    resources.qrc
-)
+add_subdirectory(src)
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(HTodo
         MANUAL_FINALIZATION
-        ${PROJECT_SOURCES}
+        ${HTODO_SOURCES}
     )
 else()
     add_executable(HTodo
-        ${PROJECT_SOURCES}
+        ${HTODO_SOURCES}
     )
 endif()
+
+target_include_directories(HTodo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/widgets"
+)
 
 target_link_libraries(HTodo PRIVATE
     Qt${QT_VERSION_MAJOR}::Core

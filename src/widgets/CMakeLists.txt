@@ -1,0 +1,13 @@
+set(HTODO_WIDGET_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroFocusCard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroFocusCard.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/RoundedComboBox.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/RoundedComboBox.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/TagSelectorWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TagSelectorWidget.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroDialWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroDialWidget.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/TagAnalysisChartWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TagAnalysisChartWidget.h
+    PARENT_SCOPE
+)

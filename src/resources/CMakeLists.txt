@@ -1,0 +1,4 @@
+set(HTODO_RESOURCE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc
+    PARENT_SCOPE
+)

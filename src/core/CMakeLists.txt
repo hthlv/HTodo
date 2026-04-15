@@ -1,0 +1,7 @@
+set(HTODO_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/TaskStorage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/TaskStorage.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroTimer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/PomodoroTimer.h
+    PARENT_SCOPE
+)
