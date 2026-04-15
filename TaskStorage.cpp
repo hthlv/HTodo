@@ -61,6 +61,29 @@ bool ensureParentDir(const QString &filePath) {
     QDir dir(fileInfo.absolutePath());
     return dir.exists() || dir.mkpath(".");
 }
+
+QDate todoDisplayEndDate(const TodoItem &item) {
+    if (!item.date.isValid()) {
+        return {};
+    }
+
+    if (item.dueAt.isValid()) {
+        const QDate dueDate = item.dueAt.date();
+        if (dueDate.isValid() && dueDate > item.date) {
+            return dueDate;
+        }
+    }
+
+    return item.date;
+}
+
+bool todoCoversDate(const TodoItem &item, const QDate &date) {
+    if (!date.isValid() || !item.date.isValid()) {
+        return false;
+    }
+
+    return date >= item.date && date <= todoDisplayEndDate(item);
+}
 }
 
 TaskStorage::TaskStorage() {
@@ -278,7 +301,7 @@ QStringList TaskStorage::availableTags() const {
 QList<TodoItem> TaskStorage::todosForDate(const QDate &date) const {
     QList<TodoItem> result;
     for (const TodoItem &item : m_todos) {
-        if (item.date == date) {
+        if (todoCoversDate(item, date)) {
             result.push_back(item);
         }
     }

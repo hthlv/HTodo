@@ -199,6 +199,29 @@ QLabel *ensureTrailingIcon(QWidget *field, const QString &objectName) {
     return icon;
 }
 
+QDate todoDisplayEndDate(const TodoItem &todo) {
+    if (!todo.date.isValid()) {
+        return {};
+    }
+
+    if (todo.dueAt.isValid()) {
+        const QDate dueDate = todo.dueAt.date();
+        if (dueDate.isValid() && dueDate > todo.date) {
+            return dueDate;
+        }
+    }
+
+    return todo.date;
+}
+
+bool todoCoversDate(const TodoItem &todo, const QDate &date) {
+    if (!date.isValid() || !todo.date.isValid()) {
+        return false;
+    }
+
+    return date >= todo.date && date <= todoDisplayEndDate(todo);
+}
+
 QStringList selectedTagsFromInput(const QLineEdit *input) {
     if (input == nullptr) {
         return {};
@@ -2200,7 +2223,7 @@ void MainWindow::refreshTodoList() {
     for (const TodoItem &todo : allTodos) {
         switch (mode) {
         case TodoListMode::Today:
-            if (todo.date == m_selectedDate) {
+            if (todoCoversDate(todo, m_selectedDate)) {
                 scopedTodos.push_back(todo);
             }
             break;
@@ -3236,7 +3259,7 @@ void MainWindow::refreshDateSidebar(const QList<TodoItem> &allTodos) {
     int total = 0;
     int completed = 0;
     for (const TodoItem &todo : allTodos) {
-        if (todo.date != m_selectedDate) {
+        if (!todoCoversDate(todo, m_selectedDate)) {
             continue;
         }
 
@@ -3282,16 +3305,23 @@ void MainWindow::refreshCalendarHighlights(const QList<TodoItem> &allTodos) {
     QSet<QDate> overdueDates;
 
     for (const TodoItem &todo : allTodos) {
-        allDates.insert(todo.date);
-        if (todo.completed) {
-            if (!activeDates.contains(todo.date)) {
-                completedOnlyDates.insert(todo.date);
-            }
-        } else {
-            activeDates.insert(todo.date);
-            completedOnlyDates.remove(todo.date);
-            if (isOverdueToday(todo)) {
-                overdueDates.insert(todo.date);
+        if (!todo.date.isValid()) {
+            continue;
+        }
+
+        const QDate endDate = todoDisplayEndDate(todo);
+        for (QDate date = todo.date; date <= endDate; date = date.addDays(1)) {
+            allDates.insert(date);
+            if (todo.completed) {
+                if (!activeDates.contains(date)) {
+                    completedOnlyDates.insert(date);
+                }
+            } else {
+                activeDates.insert(date);
+                completedOnlyDates.remove(date);
+                if (isOverdueToday(todo)) {
+                    overdueDates.insert(date);
+                }
             }
         }
     }
