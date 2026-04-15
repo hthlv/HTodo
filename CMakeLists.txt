@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HTodo VERSION 0.1 LANGUAGES CXX)
+project(HTodo VERSION 0.0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,8 +8,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Network)
 
 set(APP_ICON_SVG "${CMAKE_CURRENT_SOURCE_DIR}/icons/htodo.svg")
 set(APP_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/icons/htodo.png")
@@ -48,6 +48,7 @@ endif()
 target_link_libraries(HTodo PRIVATE
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Network
 )
 
 foreach(size IN LISTS APP_ICON_PNG_SIZES)

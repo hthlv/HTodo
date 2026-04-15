@@ -35,6 +35,7 @@ class QVBoxLayout;
 class QWidget;
 class QAction;
 class QMenu;
+class QLocalServer;
 class RoundedComboBox;
 
 class MainWindow : public QMainWindow {
@@ -42,6 +43,8 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    void attachSingleInstanceServer(QLocalServer *server);
+    void activateFromSingleInstanceMessage();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -94,6 +97,7 @@ private:
     QAction *m_showWindowAction = nullptr;
     QAction *m_hideWindowAction = nullptr;
     QAction *m_quitAction = nullptr;
+    QLocalServer *m_singleInstanceServer = nullptr;
 
     QLabel *m_todayLabel = nullptr;
     QLabel *m_todoSummaryLabel = nullptr;

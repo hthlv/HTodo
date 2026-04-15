@@ -27,6 +27,8 @@
 #include <QListView>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QMessageBox>
 #include <QMenu>
 #include <QPushButton>
@@ -355,6 +357,41 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     loadUiState();
     refreshAll();
     updateTrayActions();
+}
+
+void MainWindow::attachSingleInstanceServer(QLocalServer *server) {
+    m_singleInstanceServer = server;
+    if (m_singleInstanceServer == nullptr) {
+        return;
+    }
+
+    connect(m_singleInstanceServer, &QLocalServer::newConnection, this, [this]() {
+        if (m_singleInstanceServer == nullptr) {
+            return;
+        }
+
+        while (QLocalSocket *socket = m_singleInstanceServer->nextPendingConnection()) {
+            connect(socket, &QLocalSocket::readyRead, socket, [this, socket]() {
+                socket->readAll();
+                activateFromSingleInstanceMessage();
+                socket->disconnectFromServer();
+            });
+            connect(socket, &QLocalSocket::disconnected, socket, &QLocalSocket::deleteLater);
+        }
+    });
+}
+
+void MainWindow::activateFromSingleInstanceMessage() {
+    if (m_pomodoroFocusCard != nullptr && m_pomodoroFocusCard->isVisible()) {
+        hidePomodoroFocusCard(true);
+    } else if (isHidden()) {
+        showFromTray();
+    } else {
+        showNormal();
+        raise();
+        activateWindow();
+        updateTrayActions();
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
