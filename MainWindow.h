@@ -14,15 +14,18 @@ class QCheckBox;
 class QDateEdit;
 class QDateTimeEdit;
 class QBoxLayout;
+class QHBoxLayout;
 class QCloseEvent;
 class QFrame;
 class QGridLayout;
+class QLayout;
 class QLineEdit;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QProgressBar;
 class QPushButton;
+class QResizeEvent;
 class QScrollArea;
 class QSpinBox;
 class QSystemTrayIcon;
@@ -43,6 +46,7 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private slots:
     void addTodo();
@@ -96,6 +100,10 @@ private:
     QLabel *m_overdueReminderLabel = nullptr;
     QLabel *m_selectedDateLabel = nullptr;
     QLabel *m_selectedDateMetaLabel = nullptr;
+    QLabel *m_compactSelectedDateLabel = nullptr;
+    QLabel *m_compactTaskCountLabel = nullptr;
+    QLabel *m_compactDoneCountLabel = nullptr;
+    QLabel *m_compactFocusCountLabel = nullptr;
     QLabel *m_dayTaskCountLabel = nullptr;
     QLabel *m_dayDoneCountLabel = nullptr;
     QLabel *m_dayFocusCountLabel = nullptr;
@@ -115,10 +123,15 @@ private:
     QPushButton *m_filterToggleButton = nullptr;
     RoundedComboBox *m_viewModeFilter = nullptr;
     RoundedComboBox *m_priorityFilter = nullptr;
-    RoundedComboBox *m_tagPresetSelector = nullptr;
     QLineEdit *m_tagFilterInput = nullptr;
     QPushButton *m_clearFilterButton = nullptr;
     QWidget *m_filterPopup = nullptr;
+    QWidget *m_tagPopup = nullptr;
+    QScrollArea *m_tagPopupScrollArea = nullptr;
+    QWidget *m_tagPopupContent = nullptr;
+    QGridLayout *m_tagPopupGrid = nullptr;
+    QWidget *m_tagSelectedPanel = nullptr;
+    QLayout *m_tagSelectedLayout = nullptr;
     QListWidget *m_todoList = nullptr;
     QScrollArea *m_todoScrollArea = nullptr;
     QVBoxLayout *m_todoContentLayout = nullptr;
@@ -129,6 +142,9 @@ private:
     QFrame *m_todoEditorCard = nullptr;
     QWidget *m_todoStandardPanel = nullptr;
     QWidget *m_todoStandardHeaderPanel = nullptr;
+    QWidget *m_todoCompactDatePanel = nullptr;
+    QWidget *m_todoDateField = nullptr;
+    QWidget *m_todoDueField = nullptr;
 
     QLabel *m_cycleHintLabel = nullptr;
     QLabel *m_pomodoroPhaseLabel = nullptr;
@@ -148,6 +164,8 @@ private:
     QPushButton *m_pomodoroTaskTimingButton = nullptr;
     PomodoroFocusCard *m_pomodoroFocusCard = nullptr;
     QWidget *m_pomodoroStandardPanel = nullptr;
+    QWidget *m_pomodoroPresetPanel = nullptr;
+    QWidget *m_pomodoroHistoryCard = nullptr;
 
     QLabel *m_totalTodayLabel = nullptr;
     QLabel *m_completedTodayLabel = nullptr;
@@ -174,12 +192,14 @@ private:
     QWidget *m_taskTimingTodayCard = nullptr;
     QWidget *m_activeTaskTimingCard = nullptr;
     QWidget *m_statsStandardPanel = nullptr;
+    QPushButton *m_statsRefreshButton = nullptr;
 
     QWidget *buildTodoTab();
     QWidget *buildPomodoroTab();
     QWidget *buildStatsTab();
 
     void refreshTodoList();
+    void updateTodoItemSizeHints();
     void refreshStats();
     void refreshPomodoroView(int remainingSeconds, PomodoroTimer::Phase phase);
     void refreshPomodoroBindings();
