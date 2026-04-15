@@ -60,6 +60,7 @@ public:
                  const QStringList &tags);
     bool updateTodo(const TodoItem &todo);
     bool removeTodo(const QString &id);
+    bool removeTag(const QString &tag);
     bool setTodoCompleted(const QString &id, bool completed);
     bool startTodoTiming(const QString &id);
     bool stopTodoTiming(const QString &id);

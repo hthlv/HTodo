@@ -13,11 +13,13 @@
 #include <QDateEdit>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDialog>
 #include <QDir>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFrame>
 #include <QFont>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -29,7 +31,6 @@
 #include <QListWidgetItem>
 #include <QLocalServer>
 #include <QLocalSocket>
-#include <QMessageBox>
 #include <QMenu>
 #include <QPushButton>
 #include <QProgressBar>
@@ -53,6 +54,12 @@
 #include <QWidget>
 
 namespace {
+enum class AppDialogKind {
+    Info,
+    Warning,
+    Confirm
+};
+
 class FlowLayout : public QLayout {
 public:
     explicit FlowLayout(QWidget *parent = nullptr, int margin = 0, int hSpacing = 8, int vSpacing = 8)
@@ -186,6 +193,237 @@ void setSelectedTagsOnInput(QLineEdit *input, const QStringList &tags) {
         return;
     }
     input->setProperty(kSelectedTagsProperty, tags);
+}
+
+void setElidedLabelText(QLabel *label, const QString &text, int maxWidth) {
+    if (label == nullptr) {
+        return;
+    }
+    const QFontMetrics metrics(label->font());
+    label->setText(metrics.elidedText(text, Qt::ElideRight, maxWidth));
+    label->setToolTip(text);
+}
+
+void setElidedButtonText(QPushButton *button, const QString &text, int maxWidth) {
+    if (button == nullptr) {
+        return;
+    }
+    const QFontMetrics metrics(button->font());
+    button->setText(metrics.elidedText(text, Qt::ElideRight, maxWidth));
+    button->setToolTip(text);
+}
+
+bool showAppDialog(QWidget *parent,
+                   AppDialogKind kind,
+                   const QString &title,
+                   const QString &message,
+                   const QString &confirmText = QStringLiteral("确定"),
+                   const QString &cancelText = QStringLiteral("取消")) {
+    QDialog dialog(parent);
+    dialog.setObjectName("appDialog");
+    dialog.setWindowFlag(Qt::FramelessWindowHint, true);
+    dialog.setWindowFlag(Qt::Dialog, true);
+    dialog.setModal(true);
+    dialog.setSizeGripEnabled(false);
+    dialog.setAttribute(Qt::WA_TranslucentBackground, true);
+    dialog.setStyleSheet(R"(
+        QDialog#appDialog {
+            background: transparent;
+        }
+        QFrame#appDialogPanel {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 20px;
+        }
+        QFrame#appDialogPanel QLabel {
+            background: transparent;
+            color: #2f3437;
+        }
+        QLabel#appDialogHeaderTitle {
+            font-size: 16px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#appDialogTitle {
+            font-size: 18px;
+            font-weight: 700;
+            color: #191919;
+        }
+        QLabel#appDialogMessage {
+            font-size: 14px;
+            color: #4d5560;
+        }
+        QLabel#appDialogIcon {
+            min-width: 44px;
+            max-width: 44px;
+            min-height: 44px;
+            max-height: 44px;
+            border-radius: 22px;
+            font-size: 22px;
+            font-weight: 700;
+        }
+        QLabel#appDialogIcon[kind="info"] {
+            background: #eaf4ff;
+            color: #2f80ed;
+        }
+        QLabel#appDialogIcon[kind="warning"] {
+            background: #fff2e8;
+            color: #f08a24;
+        }
+        QLabel#appDialogIcon[kind="confirm"] {
+            background: #eaf8f0;
+            color: #07c160;
+        }
+        QPushButton {
+            background: #f2f2f2;
+            border: 1px solid #e5e5e5;
+            border-radius: 14px;
+            padding: 10px 18px;
+            color: #191919;
+            font-weight: 600;
+            min-width: 88px;
+        }
+        QPushButton:hover {
+            background: #ebebeb;
+        }
+        QPushButton#primaryButton {
+            background: #07c160;
+            color: #ffffff;
+            border: 1px solid #07c160;
+        }
+        QPushButton#primaryButton:hover {
+            background: #06ad56;
+            border: 1px solid #06ad56;
+        }
+        QPushButton#secondaryButton {
+            background: #f2f2f2;
+            color: #191919;
+            border: 1px solid #e5e5e5;
+        }
+        QPushButton#secondaryButton:hover {
+            background: #ebebeb;
+        }
+        QPushButton#dialogCloseButton {
+            background: #f3f3f3;
+            border: 1px solid #e2e2e2;
+            border-radius: 12px;
+            min-width: 28px;
+            max-width: 28px;
+            min-height: 28px;
+            max-height: 28px;
+            padding: 0;
+            color: #6f7782;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        QPushButton#dialogCloseButton:hover {
+            background: #e8e8e8;
+            border: 1px solid #d5d5d5;
+        }
+    )");
+
+    auto *rootLayout = new QVBoxLayout(&dialog);
+    rootLayout->setContentsMargins(12, 12, 12, 12);
+    rootLayout->setSpacing(0);
+
+    auto *panel = new QFrame(&dialog);
+    panel->setObjectName("appDialogPanel");
+    rootLayout->addWidget(panel);
+
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(18, 16, 18, 16);
+    layout->setSpacing(14);
+
+    auto *headerRow = new QHBoxLayout();
+    headerRow->setContentsMargins(0, 0, 0, 0);
+    headerRow->setSpacing(8);
+    headerRow->addSpacing(28);
+    auto *headerTitle = new QLabel(title, panel);
+    headerTitle->setObjectName("appDialogHeaderTitle");
+    headerTitle->setAlignment(Qt::AlignCenter);
+    auto *closeButton = new QPushButton(QStringLiteral("×"), panel);
+    closeButton->setObjectName("dialogCloseButton");
+    QObject::connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    headerRow->addWidget(headerTitle, 1);
+    headerRow->addWidget(closeButton, 0, Qt::AlignRight);
+    layout->addLayout(headerRow);
+
+    auto *contentRow = new QHBoxLayout();
+    contentRow->setContentsMargins(0, 0, 0, 0);
+    contentRow->setSpacing(14);
+    contentRow->setAlignment(Qt::AlignTop);
+
+    auto *iconFrame = new QLabel(panel);
+    iconFrame->setObjectName("appDialogIcon");
+    iconFrame->setAlignment(Qt::AlignCenter);
+    switch (kind) {
+    case AppDialogKind::Info:
+        iconFrame->setProperty("kind", "info");
+        iconFrame->setText("i");
+        break;
+    case AppDialogKind::Warning:
+        iconFrame->setProperty("kind", "warning");
+        iconFrame->setText("!");
+        break;
+    case AppDialogKind::Confirm:
+    default:
+        iconFrame->setProperty("kind", "confirm");
+        iconFrame->setText("?");
+        break;
+    }
+
+    auto *textWrap = new QVBoxLayout();
+    textWrap->setContentsMargins(0, 0, 0, 0);
+    textWrap->setSpacing(6);
+
+    auto *titleLabel = new QLabel(title, panel);
+    titleLabel->setObjectName("appDialogTitle");
+    titleLabel->setWordWrap(true);
+    auto *messageLabel = new QLabel(message, panel);
+    messageLabel->setObjectName("appDialogMessage");
+    messageLabel->setWordWrap(true);
+
+    textWrap->addWidget(titleLabel);
+    textWrap->addWidget(messageLabel);
+    contentRow->addWidget(iconFrame, 0, Qt::AlignTop);
+    contentRow->addLayout(textWrap, 1);
+    layout->addLayout(contentRow);
+
+    auto *buttonRow = new QHBoxLayout();
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->setSpacing(10);
+    buttonRow->addStretch(1);
+
+    bool accepted = false;
+    if (kind == AppDialogKind::Confirm) {
+        auto *cancelButton = new QPushButton(cancelText, panel);
+        cancelButton->setObjectName("secondaryButton");
+        auto *confirmButton = new QPushButton(confirmText, panel);
+        confirmButton->setObjectName("primaryButton");
+        QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+        QObject::connect(confirmButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+        buttonRow->addWidget(cancelButton);
+        buttonRow->addWidget(confirmButton);
+    } else {
+        auto *confirmButton = new QPushButton(confirmText, panel);
+        confirmButton->setObjectName("primaryButton");
+        QObject::connect(confirmButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+        buttonRow->addWidget(confirmButton);
+    }
+
+    layout->addLayout(buttonRow);
+    panel->setFixedWidth(420);
+    if (kind == AppDialogKind::Confirm) {
+        accepted = dialog.exec() == QDialog::Accepted;
+    } else {
+        dialog.exec();
+        accepted = true;
+    }
+    return accepted;
+}
+
+void showAppWarningDialog(QWidget *parent, const QString &title, const QString &message) {
+    showAppDialog(parent, AppDialogKind::Warning, title, message);
 }
 }
 
@@ -734,9 +972,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if (watched == m_tagInput && event->type() == QEvent::MouseButtonPress) {
         if (m_tagPopup != nullptr) {
             refreshTagPresets();
-            m_tagPopup->adjustSize();
-            const QPoint popupPos = m_tagInput->mapToGlobal(QPoint(0, m_tagInput->height() + 6));
-            m_tagPopup->move(popupPos);
+            positionTagPopup();
             m_tagPopup->show();
             m_tagPopup->raise();
         }
@@ -776,6 +1012,46 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::positionTagPopup() {
+    if (m_tagPopup == nullptr || m_tagInput == nullptr) {
+        return;
+    }
+
+    const int popupWidth = m_tagPopup->property("preferredWidth").toInt() > 0
+                               ? m_tagPopup->property("preferredWidth").toInt()
+                               : qMax(320, m_tagInput->width());
+    m_tagPopup->setFixedWidth(popupWidth);
+    m_tagPopup->adjustSize();
+
+    const QRect anchorRect(m_tagInput->mapToGlobal(QPoint(0, 0)), m_tagInput->size());
+    QRect available = QRect(QPoint(0, 0), QSize(1280, 720));
+    if (QScreen *screenHandle = m_tagInput->screen(); screenHandle != nullptr) {
+        available = screenHandle->availableGeometry();
+    } else if (QScreen *screenHandle = screen(); screenHandle != nullptr) {
+        available = screenHandle->availableGeometry();
+    }
+
+    const QSize popupSize = m_tagPopup->size();
+    int x = anchorRect.left();
+    int y = anchorRect.bottom() + 8;
+
+    if (x + popupSize.width() > available.right() - 12) {
+        x = available.right() - popupSize.width() - 12;
+    }
+    if (x < available.left() + 12) {
+        x = available.left() + 12;
+    }
+
+    if (y + popupSize.height() > available.bottom() - 12) {
+        y = anchorRect.top() - popupSize.height() - 8;
+    }
+    if (y < available.top() + 12) {
+        y = available.top() + 12;
+    }
+
+    m_tagPopup->move(QPoint(x, y));
 }
 
 QWidget *MainWindow::buildTodoTab() {
@@ -983,25 +1259,36 @@ QWidget *MainWindow::buildTodoTab() {
 
     auto *tagPopup = new QFrame(tab, Qt::Popup | Qt::FramelessWindowHint);
     tagPopup->setObjectName("floatingPanel");
+    tagPopup->setAttribute(Qt::WA_TranslucentBackground, true);
     auto *tagPopupLayout = new QVBoxLayout(tagPopup);
     tagPopupLayout->setContentsMargins(10, 10, 10, 10);
-    tagPopupLayout->setSpacing(8);
-    auto *tagPopupTitle = new QLabel("点击标签添加或取消", tagPopup);
+    tagPopupLayout->setSpacing(0);
+
+    auto *tagPopupSurface = new QFrame(tagPopup);
+    tagPopupSurface->setObjectName("floatingPanelSurface");
+    auto *tagPopupSurfaceLayout = new QVBoxLayout(tagPopupSurface);
+    tagPopupSurfaceLayout->setContentsMargins(14, 14, 14, 14);
+    tagPopupSurfaceLayout->setSpacing(10);
+
+    auto *tagPopupTitle = new QLabel("点击标签添加或取消", tagPopupSurface);
     tagPopupTitle->setObjectName("sectionTitleSmall");
-    m_tagPopupScrollArea = new QScrollArea(tagPopup);
+    m_tagPopupScrollArea = new QScrollArea(tagPopupSurface);
     m_tagPopupScrollArea->setWidgetResizable(true);
     m_tagPopupScrollArea->setFrameShape(QFrame::NoFrame);
     m_tagPopupScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_tagPopupScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_tagPopupScrollArea->setMaximumHeight(220);
+    m_tagPopupScrollArea->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_tagPopupContent = new QWidget(m_tagPopupScrollArea);
+    m_tagPopupContent->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     m_tagPopupGrid = new QGridLayout(m_tagPopupContent);
-    m_tagPopupGrid->setContentsMargins(0, 0, 0, 0);
+    m_tagPopupGrid->setContentsMargins(0, 0, 20, 0);
     m_tagPopupGrid->setHorizontalSpacing(8);
     m_tagPopupGrid->setVerticalSpacing(8);
     m_tagPopupScrollArea->setWidget(m_tagPopupContent);
-    tagPopupLayout->addWidget(tagPopupTitle);
-    tagPopupLayout->addWidget(m_tagPopupScrollArea);
+    tagPopupSurfaceLayout->addWidget(tagPopupTitle);
+    tagPopupSurfaceLayout->addWidget(m_tagPopupScrollArea);
+    tagPopupLayout->addWidget(tagPopupSurface);
     m_tagPopup = tagPopup;
 
     m_addTodoButton = new QPushButton("添加", tab);
@@ -1607,7 +1894,7 @@ QWidget *MainWindow::buildStatsTab() {
 void MainWindow::addTodo() {
     const QString title = m_todoInput->text().trimmed();
     if (title.isEmpty()) {
-        QMessageBox::warning(this, "保存失败", "任务标题不能为空。");
+        showAppWarningDialog(this, "保存失败", "任务标题不能为空。");
         return;
     }
 
@@ -1624,7 +1911,7 @@ void MainWindow::addTodo() {
     } else {
         const auto todoOpt = m_storage.todoById(m_editingTodoId);
         if (!todoOpt.has_value()) {
-            QMessageBox::warning(this, "保存失败", "当前编辑的任务不存在。");
+            showAppWarningDialog(this, "保存失败", "当前编辑的任务不存在。");
             resetTodoForm();
             refreshTodoList();
             return;
@@ -1640,7 +1927,7 @@ void MainWindow::addTodo() {
     }
 
     if (!saved) {
-        QMessageBox::warning(this, "保存失败", "无法保存任务，请重试。");
+        showAppWarningDialog(this, "保存失败", "无法保存任务，请重试。");
         return;
     }
 
@@ -1673,7 +1960,7 @@ bool MainWindow::deleteTodoById(const QString &id) {
     }
 
     if (!m_storage.removeTodo(id)) {
-        QMessageBox::warning(this, "删除失败", "无法删除该任务，请重试。");
+        showAppWarningDialog(this, "删除失败", "无法删除该任务，请重试。");
         return false;
     }
 
@@ -1698,7 +1985,7 @@ void MainWindow::onTodoItemChanged(QListWidgetItem *item) {
     const bool completed = item->checkState() == Qt::Checked;
 
     if (!m_storage.setTodoCompleted(id, completed)) {
-        QMessageBox::warning(this, "更新失败", "无法更新任务状态，请重试。");
+        showAppWarningDialog(this, "更新失败", "无法更新任务状态，请重试。");
         refreshTodoList();
         return;
     }
@@ -1714,14 +2001,19 @@ void MainWindow::onTodoSelectionChanged() {
         return;
     }
 
-    auto *item = m_todoList->currentItem();
-    if (item == nullptr) {
+    if (m_todoList == nullptr || m_todoList->selectedItems().isEmpty()) {
         if (!m_editingTodoId.isEmpty()) {
             resetTodoForm();
             refreshTodoList();
         } else {
             updateTodoEditorState();
         }
+        return;
+    }
+
+    auto *item = m_todoList->currentItem();
+    if (item == nullptr) {
+        updateTodoEditorState();
         return;
     }
 
@@ -2501,6 +2793,8 @@ void MainWindow::refreshTagPresets() {
             chipLayout->setSpacing(6);
             auto *chipLabel = new QLabel(tag, chip);
             chipLabel->setObjectName("sectionTitleSmall");
+            chipLabel->setMaximumWidth(112);
+            setElidedLabelText(chipLabel, tag, 112);
             auto *removeButton = new QPushButton(chip);
             removeButton->setObjectName("cardIconButton");
             removeButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
@@ -2532,13 +2826,12 @@ void MainWindow::refreshTagPresets() {
         }
     }
 
-    int row = 0;
-    int column = 0;
-    constexpr int columnCount = 2;
+    QList<QWidget *> popupChips;
+    popupChips.reserve(tags.size());
     for (const QString &tag : tags) {
-        auto *tagButton = new QPushButton(tag, m_tagPopupContent);
-        tagButton->setObjectName("secondaryButton");
-        tagButton->setMinimumHeight(34);
+        auto *tagChip = new QFrame(m_tagPopupContent);
+        tagChip->setObjectName("floatingTagChip");
+        tagChip->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         bool selected = false;
         for (const QString &existing : selectedTags) {
             if (QString::compare(existing, tag, Qt::CaseInsensitive) == 0) {
@@ -2546,7 +2839,18 @@ void MainWindow::refreshTagPresets() {
                 break;
             }
         }
-        tagButton->setProperty("tagSelected", selected);
+        tagChip->setProperty("tagSelected", selected);
+
+        auto *tagRowLayout = new QHBoxLayout(tagChip);
+        tagRowLayout->setContentsMargins(0, 0, 0, 0);
+        tagRowLayout->setSpacing(2);
+
+        auto *tagButton = new QPushButton(tag, tagChip);
+        tagButton->setObjectName("tagChipButton");
+        tagButton->setMinimumHeight(34);
+        tagButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        tagButton->setMaximumWidth(108);
+        setElidedButtonText(tagButton, tag, 82);
         connect(tagButton, &QPushButton::clicked, this, [this, tag]() {
             if (m_tagInput == nullptr) {
                 return;
@@ -2567,17 +2871,108 @@ void MainWindow::refreshTagPresets() {
             setSelectedTagsOnInput(m_tagInput, updatedTags);
             refreshTagPresets();
             if (m_tagPopup != nullptr) {
-                m_tagPopup->adjustSize();
+                positionTagPopup();
             }
         });
-        m_tagPopupGrid->addWidget(tagButton, row, column);
-        ++column;
-        if (column >= columnCount) {
-            column = 0;
-            ++row;
-        }
+        tagRowLayout->addWidget(tagButton, 1);
+
+        auto *deleteButton = new QPushButton(tagChip);
+        deleteButton->setObjectName("cardIconButton");
+        deleteButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
+        deleteButton->setIconSize(QSize(12, 12));
+        deleteButton->setFixedSize(22, 22);
+        deleteButton->setToolTip(QString("删除标签 %1").arg(tag));
+        connect(deleteButton, &QPushButton::clicked, this, [this, tag]() {
+            const bool confirmed = showAppDialog(this,
+                                                 AppDialogKind::Confirm,
+                                                 "删除标签",
+                                                 QString("删除标签“%1”后，会同时从所有任务中移除该标签。是否继续？").arg(tag),
+                                                 "删除",
+                                                 "取消");
+            if (!confirmed) {
+                return;
+            }
+
+            if (!m_storage.removeTag(tag)) {
+                showAppWarningDialog(this, "删除失败", "无法删除标签，请重试。");
+                return;
+            }
+
+            QStringList updatedSelectedTags;
+            for (const QString &existing : selectedTagsFromInput(m_tagInput)) {
+                if (QString::compare(existing, tag, Qt::CaseInsensitive) != 0) {
+                    updatedSelectedTags.push_back(existing);
+                }
+            }
+            setSelectedTagsOnInput(m_tagInput, updatedSelectedTags);
+            refreshTodoList();
+            refreshStats();
+            refreshPomodoroBindings();
+            refreshTagPresets();
+            statusBar()->showMessage(QString("已删除标签“%1”").arg(tag), 2500);
+        });
+        tagRowLayout->addWidget(deleteButton, 0, Qt::AlignVCenter);
+
+        popupChips.push_back(tagChip);
     }
+
+    constexpr int columnCount = 3;
+    int maxChipWidth = 0;
+    int maxChipHeight = 0;
+    for (QWidget *chip : popupChips) {
+        if (chip == nullptr) {
+            continue;
+        }
+        chip->adjustSize();
+        const QSize chipSize = chip->sizeHint();
+        maxChipWidth = qMax(maxChipWidth, chipSize.width());
+        maxChipHeight = qMax(maxChipHeight, chipSize.height());
+    }
+
+    for (int i = 0; i < popupChips.size(); ++i) {
+        QWidget *chip = popupChips.at(i);
+        if (chip == nullptr) {
+            continue;
+        }
+        chip->setFixedWidth(maxChipWidth);
+        m_tagPopupGrid->addWidget(chip, i / columnCount, i % columnCount);
+    }
+
+    const int totalRows = qMax(1, (popupChips.size() + columnCount - 1) / columnCount);
+    const int contentWidth = columnCount * maxChipWidth
+                             + qMax(0, columnCount - 1) * m_tagPopupGrid->horizontalSpacing()
+                             + m_tagPopupGrid->contentsMargins().left()
+                             + m_tagPopupGrid->contentsMargins().right();
+    const int contentHeight = totalRows * maxChipHeight
+                              + qMax(0, totalRows - 1) * m_tagPopupGrid->verticalSpacing()
+                              + m_tagPopupGrid->contentsMargins().top()
+                              + m_tagPopupGrid->contentsMargins().bottom();
+    m_tagPopupContent->setFixedSize(contentWidth, contentHeight);
     m_tagPopupContent->adjustSize();
+    if (m_tagPopupScrollArea != nullptr) {
+        const int visibleRows = qMin(3, totalRows);
+        const int targetHeight = qBound(40,
+                                        visibleRows * maxChipHeight + qMax(0, visibleRows - 1) * m_tagPopupGrid->verticalSpacing() + 2,
+                                        contentHeight + 2);
+        const bool needsScroll = contentHeight > targetHeight;
+        m_tagPopupScrollArea->setFixedHeight(targetHeight);
+        m_tagPopupScrollArea->setVerticalScrollBarPolicy(needsScroll
+                                                             ? Qt::ScrollBarAsNeeded
+                                                             : Qt::ScrollBarAlwaysOff);
+
+        const int scrollBarReserve = needsScroll && m_tagPopupScrollArea->verticalScrollBar() != nullptr
+                                         ? m_tagPopupScrollArea->verticalScrollBar()->sizeHint().width() + 8
+                                         : 0;
+        const int popupWidth = qMax(m_tagInput != nullptr ? m_tagInput->width() : 0,
+                                    contentWidth
+                                        + scrollBarReserve
+                                        + 16);
+        const int currentPreferredWidth = m_tagPopup->property("preferredWidth").toInt();
+        const int stableWidth = m_tagPopup->isVisible()
+                                    ? qMax(currentPreferredWidth, popupWidth)
+                                    : popupWidth;
+        m_tagPopup->setProperty("preferredWidth", stableWidth);
+    }
 }
 
 void MainWindow::refreshPomodoroTaskTimingPanel() {
@@ -2779,7 +3174,7 @@ QWidget *MainWindow::createTodoCard(const TodoItem &todo) {
         if (!m_storage.setTodoCompleted(id, checked)) {
             QSignalBlocker blocker(checkBox);
             checkBox->setChecked(!checked);
-            QMessageBox::warning(this, "更新失败", "无法更新任务状态，请重试。");
+            showAppWarningDialog(this, "更新失败", "无法更新任务状态，请重试。");
             return;
         }
 
@@ -2906,9 +3301,22 @@ void MainWindow::applyTheme() {
             border-radius: 18px;
         }
         QFrame#floatingPanel {
-            background: #fafafa;
+            background: transparent;
+            border: 0;
+        }
+        QFrame#floatingPanelSurface {
+            background: #ffffff;
             border: 1px solid #e8e8e8;
-            border-radius: 18px;
+            border-radius: 20px;
+        }
+        QFrame#floatingPanelSurface QScrollArea {
+            background: transparent;
+            border: 0;
+        }
+        QFrame#floatingPanelSurface QLabel#sectionTitleSmall {
+            color: #191919;
+            font-size: 15px;
+            font-weight: 700;
         }
         QScrollArea {
             background: transparent;
@@ -3319,19 +3727,49 @@ void MainWindow::applyTheme() {
         QPushButton#secondaryButton:hover {
             background: #ebebeb;
         }
-        QFrame#floatingPanel QPushButton#secondaryButton {
+        QFrame#floatingPanelSurface QPushButton#secondaryButton {
             border-radius: 16px;
             padding: 8px 14px;
             text-align: left;
         }
-        QFrame#floatingPanel QPushButton#secondaryButton[tagSelected="true"] {
+        QFrame#floatingPanelSurface QPushButton#secondaryButton[tagSelected="true"] {
             background: #eaf8f0;
             color: #07c160;
             border: 1px solid #bfe8cc;
         }
-        QFrame#floatingPanel QPushButton#secondaryButton[tagSelected="true"]:hover {
+        QFrame#floatingPanelSurface QPushButton#secondaryButton[tagSelected="true"]:hover {
             background: #ddf4e6;
             border: 1px solid #a9ddb9;
+        }
+        QFrame#floatingTagChip {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 16px;
+        }
+        QFrame#floatingTagChip[tagSelected="true"] {
+            background: #eaf8f0;
+            border: 1px solid #bfe8cc;
+        }
+        QFrame#floatingTagChip QPushButton#tagChipButton {
+            background: transparent;
+            border: 0;
+            border-radius: 16px;
+            padding: 8px 8px 8px 12px;
+            text-align: left;
+            color: #191919;
+        }
+        QFrame#floatingTagChip[tagSelected="true"] QPushButton#tagChipButton {
+            color: #07c160;
+        }
+        QFrame#floatingTagChip QPushButton#tagChipButton:hover {
+            background: transparent;
+        }
+        QFrame#floatingTagChip QPushButton#cardIconButton {
+            min-width: 22px;
+            max-width: 22px;
+            min-height: 22px;
+            max-height: 22px;
+            margin-right: 6px;
         }
         QPushButton#cardIconButton {
             background: #fff4f3;
@@ -3564,7 +4002,10 @@ void MainWindow::resetTodoForm() {
     m_tagInput->clear();
     setSelectedTagsOnInput(m_tagInput, {});
     refreshTagPresets();
-    m_todoList->clearSelection();
+    if (m_todoList != nullptr) {
+        m_todoList->clearSelection();
+        m_todoList->setCurrentItem(nullptr);
+    }
     updateTodoEditorState();
 }
 

@@ -370,6 +370,52 @@ bool TaskStorage::removeTodo(const QString &id) {
     return false;
 }
 
+bool TaskStorage::removeTag(const QString &tag) {
+    const QString cleanedTag = tag.trimmed();
+    if (cleanedTag.isEmpty()) {
+        return false;
+    }
+
+    const QList<TodoItem> oldTodos = m_todos;
+    const QStringList oldTagCatalog = m_tagCatalog;
+    bool changed = false;
+
+    for (TodoItem &item : m_todos) {
+        QStringList updatedTags;
+        for (const QString &existing : item.tags) {
+            if (QString::compare(existing, cleanedTag, Qt::CaseInsensitive) == 0) {
+                changed = true;
+                continue;
+            }
+            updatedTags.push_back(existing);
+        }
+        item.tags = updatedTags;
+    }
+
+    QStringList updatedCatalog;
+    for (const QString &existing : m_tagCatalog) {
+        if (QString::compare(existing, cleanedTag, Qt::CaseInsensitive) == 0) {
+            changed = true;
+            continue;
+        }
+        updatedCatalog.push_back(existing);
+    }
+    m_tagCatalog = updatedCatalog;
+    rebuildTagCatalog();
+
+    if (!changed) {
+        return false;
+    }
+
+    if (save()) {
+        return true;
+    }
+
+    m_todos = oldTodos;
+    m_tagCatalog = oldTagCatalog;
+    return false;
+}
+
 bool TaskStorage::setTodoCompleted(const QString &id, bool completed) {
     for (TodoItem &item : m_todos) {
         if (item.id == id) {

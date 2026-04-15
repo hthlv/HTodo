@@ -209,6 +209,7 @@ private:
     void refreshPomodoroBindings();
     void refreshTagPresets();
     void refreshPomodoroTaskTimingPanel();
+    void positionTagPopup();
     void togglePomodoroFocusCard();
     void showPomodoroFocusCard();
     void hidePomodoroFocusCard(bool restoreMainWindow);
