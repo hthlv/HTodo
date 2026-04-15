@@ -9,12 +9,28 @@
 
 #include "MainWindow.h"
 
+namespace {
+QIcon createAppIcon() {
+#if defined(Q_OS_LINUX)
+    const QIcon themedIcon = QIcon::fromTheme(QStringLiteral("htodo"));
+    if (!themedIcon.isNull()) {
+        return themedIcon;
+    }
+    const QIcon svgIcon(QStringLiteral(":/icons/htodo.svg"));
+    if (!svgIcon.isNull()) {
+        return svgIcon;
+    }
+#endif
+    return QIcon(QStringLiteral(":/icons/htodo.png"));
+}
+}
+
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("HTodo");
     QApplication::setOrganizationName("hyp");
     QApplication::setStyle(QStyleFactory::create("Fusion"));
-    QApplication::setWindowIcon(QIcon(":/icons/htodo.png"));
+    QApplication::setWindowIcon(createAppIcon());
 
     const QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
     const QString lockDir = runtimeDir.isEmpty() ? QDir::tempPath() : runtimeDir;
@@ -42,7 +58,7 @@ int main(int argc, char *argv[]) {
     }
 
     MainWindow window;
-    window.setWindowIcon(QIcon(":/icons/htodo.png"));
+    window.setWindowIcon(createAppIcon());
     window.attachSingleInstanceServer(instanceServer);
     window.show();
 

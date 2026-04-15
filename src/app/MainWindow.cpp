@@ -22,6 +22,7 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <functional>
+#include <QGuiApplication>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -170,6 +171,121 @@ protected:
 };
 
 constexpr auto kSelectedTagsProperty = "selectedTags";
+constexpr int kBaseWindowWidth = 560;
+constexpr int kBaseWindowHeight = 860;
+constexpr double kTargetScreenWidthRatio = 0.92;
+constexpr double kTargetScreenHeightRatio = 0.82;
+
+QIcon createAppIcon() {
+#if defined(Q_OS_LINUX)
+    const QIcon themedIcon = QIcon::fromTheme(QStringLiteral("htodo"));
+    if (!themedIcon.isNull()) {
+        return themedIcon;
+    }
+    const QIcon svgIcon(QStringLiteral(":/icons/htodo.svg"));
+    if (!svgIcon.isNull()) {
+        return svgIcon;
+    }
+#endif
+    return QIcon(QStringLiteral(":/icons/htodo.png"));
+}
+
+QRect availableGeometryForWindow(const QWidget *window) {
+    if (window != nullptr) {
+        if (QScreen *screenHandle = window->screen(); screenHandle != nullptr) {
+            return screenHandle->availableGeometry();
+        }
+    }
+
+    if (QScreen *screenHandle = QGuiApplication::primaryScreen(); screenHandle != nullptr) {
+        return screenHandle->availableGeometry();
+    }
+
+    return QRect(0, 0, kBaseWindowWidth, kBaseWindowHeight);
+}
+
+QSize fixedWindowSizeForGeometry(const QRect &availableGeometry) {
+    if (!availableGeometry.isValid()) {
+        return QSize(kBaseWindowWidth, kBaseWindowHeight);
+    }
+
+    const double widthScale =
+        static_cast<double>(availableGeometry.width()) * kTargetScreenWidthRatio / kBaseWindowWidth;
+    const double heightScale =
+        static_cast<double>(availableGeometry.height()) * kTargetScreenHeightRatio / kBaseWindowHeight;
+    const double scale = qMin(1.0, qMin(widthScale, heightScale));
+
+    if (scale <= 0.0) {
+        return QSize(kBaseWindowWidth, kBaseWindowHeight);
+    }
+
+    return QSize(
+        qMax(1, qRound(kBaseWindowWidth * scale)),
+        qMax(1, qRound(kBaseWindowHeight * scale)));
+}
+
+QSize boundedWindowSize(const QRect &availableGeometry, QSize requestedSize, const QSize &minimumSize) {
+    requestedSize = requestedSize.expandedTo(minimumSize);
+    if (availableGeometry.isValid()) {
+        requestedSize.setWidth(qMin(requestedSize.width(), availableGeometry.width()));
+        requestedSize.setHeight(qMin(requestedSize.height(), availableGeometry.height()));
+    }
+    requestedSize.setWidth(qMax(1, requestedSize.width()));
+    requestedSize.setHeight(qMax(1, requestedSize.height()));
+    return requestedSize;
+}
+
+QPoint centeredTopLeft(const QRect &availableGeometry, const QSize &windowSize) {
+    if (!availableGeometry.isValid()) {
+        return {};
+    }
+
+    return QPoint(
+        availableGeometry.center().x() - windowSize.width() / 2,
+        availableGeometry.center().y() - windowSize.height() / 2);
+}
+
+QPoint boundedTopLeft(const QRect &availableGeometry, const QSize &windowSize, const QPoint &requestedTopLeft) {
+    if (!availableGeometry.isValid()) {
+        return requestedTopLeft;
+    }
+
+    const int minX = availableGeometry.left();
+    const int minY = availableGeometry.top();
+    const int maxX = qMax(minX, availableGeometry.right() - windowSize.width() + 1);
+    const int maxY = qMax(minY, availableGeometry.bottom() - windowSize.height() + 1);
+
+    return QPoint(
+        qBound(minX, requestedTopLeft.x(), maxX),
+        qBound(minY, requestedTopLeft.y(), maxY));
+}
+
+QString scaleStyleSheetPixels(const QString &styleSheet, double scale) {
+    if (scale >= 0.999) {
+        return styleSheet;
+    }
+
+    QString scaled = styleSheet;
+    QRegularExpression pxPattern(R"((\d+(?:\.\d+)?)px)");
+    QRegularExpressionMatchIterator it = pxPattern.globalMatch(styleSheet);
+    int offset = 0;
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        const QString captured = match.captured(1);
+        bool ok = false;
+        const double value = captured.toDouble(&ok);
+        if (!ok) {
+            continue;
+        }
+
+        const int scaledValue = value <= 0.0 ? 0 : qMax(1, qRound(value * scale));
+        const QString replacement = QString::number(scaledValue) + "px";
+        scaled.replace(match.capturedStart(0) + offset, match.capturedLength(0), replacement);
+        offset += replacement.size() - match.capturedLength(0);
+    }
+
+    return scaled;
+}
 
 QString appConfigDirPath() {
     const QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
@@ -505,9 +621,8 @@ void showAppWarningDialog(QWidget *parent, const QString &title, const QString &
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setObjectName("HTodoWindow");
     setWindowTitle("HTodo");
-    setWindowIcon(QIcon(":/icons/htodo.png"));
+    setWindowIcon(createAppIcon());
     setWindowFlag(Qt::WindowMaximizeButtonHint, false);
-    setFixedSize(560, 860);
 
     m_tabs = new QTabWidget(this);
     m_tabs->setObjectName("mainTabs");
@@ -805,10 +920,17 @@ void MainWindow::setupTrayIcon() {
     connect(m_quitAction, &QAction::triggered, this, [this]() {
         m_quitRequested = true;
         saveUiState();
+        if (m_singleInstanceServer != nullptr) {
+            m_singleInstanceServer->close();
+        }
+        if (m_pomodoroFocusCard != nullptr) {
+            m_pomodoroFocusCard->hide();
+        }
         if (m_trayIcon != nullptr) {
             m_trayIcon->hide();
         }
         close();
+        QCoreApplication::quit();
     });
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
@@ -841,10 +963,172 @@ void MainWindow::showFromTray() {
     updateTrayActions();
 }
 
+int MainWindow::scaledMetric(int baseValue, int minimum) const {
+    return qMax(minimum, qRound(baseValue * m_uiScale));
+}
+
+void MainWindow::applyScaledMetrics() {
+    const int filterButtonHeight = scaledMetric(36, 28);
+    const int fieldHeight = scaledMetric(38, 30);
+    const int selectorHeight = scaledMetric(44, 34);
+    const int compactCalendarHeight = scaledMetric(204, 150);
+    const int standardCalendarHeight = scaledMetric(232, 170);
+    const int statPillHeight = scaledMetric(52, 38);
+    const int actionButtonWidth = scaledMetric(120, 90);
+    const int pomodoroNumberWidth = scaledMetric(150, 110);
+    const int pomodoroDialSize = scaledMetric(220, 150);
+    const int pomodoroHistoryHeight = scaledMetric(120, 88);
+    const int chartHeight = scaledMetric(220, 160);
+    const int metricCardHeight = scaledMetric(132, 96);
+    const int heroCardHeight = scaledMetric(118, 88);
+    const int narrativeCardHeight = scaledMetric(128, 92);
+
+    if (m_filterToggleButton != nullptr) {
+        m_filterToggleButton->setMinimumHeight(filterButtonHeight);
+    }
+    if (m_prevDayButton != nullptr) {
+        m_prevDayButton->setMinimumHeight(filterButtonHeight);
+    }
+    if (m_todayQuickButton != nullptr) {
+        m_todayQuickButton->setMinimumHeight(filterButtonHeight);
+    }
+    if (m_nextDayButton != nullptr) {
+        m_nextDayButton->setMinimumHeight(filterButtonHeight);
+    }
+    if (m_dateNavigator != nullptr) {
+        m_dateNavigator->setFixedHeight(m_windowLayoutMode == WindowLayoutMode::Compact
+                                            ? compactCalendarHeight
+                                            : standardCalendarHeight);
+    }
+
+    if (m_dayTaskCountLabel != nullptr) {
+        m_dayTaskCountLabel->setMinimumHeight(statPillHeight);
+    }
+    if (m_dayDoneCountLabel != nullptr) {
+        m_dayDoneCountLabel->setMinimumHeight(statPillHeight);
+    }
+    if (m_dayFocusCountLabel != nullptr) {
+        m_dayFocusCountLabel->setMinimumHeight(statPillHeight);
+    }
+
+    if (m_todoInput != nullptr) {
+        m_todoInput->setMinimumHeight(fieldHeight);
+    }
+    if (m_taskDateInput != nullptr) {
+        m_taskDateInput->setMinimumHeight(fieldHeight);
+    }
+    if (m_planEndDateInput != nullptr) {
+        m_planEndDateInput->setMinimumHeight(fieldHeight);
+    }
+    if (m_priorityInput != nullptr) {
+        m_priorityInput->setMinimumHeight(fieldHeight);
+    }
+    if (m_dueAtInput != nullptr) {
+        m_dueAtInput->setMinimumHeight(fieldHeight);
+    }
+    if (m_addTodoButton != nullptr) {
+        m_addTodoButton->setMinimumHeight(fieldHeight);
+        m_addTodoButton->setMinimumWidth(actionButtonWidth);
+    }
+    if (m_cancelEditButton != nullptr) {
+        m_cancelEditButton->setMinimumHeight(fieldHeight);
+        m_cancelEditButton->setMinimumWidth(actionButtonWidth);
+    }
+
+    if (m_pomodoroTaskSelector != nullptr) {
+        m_pomodoroTaskSelector->setMinimumHeight(selectorHeight);
+    }
+    if (m_focusMinutes != nullptr) {
+        m_focusMinutes->setMinimumHeight(selectorHeight);
+        m_focusMinutes->setMinimumWidth(pomodoroNumberWidth);
+    }
+    if (m_breakMinutes != nullptr) {
+        m_breakMinutes->setMinimumHeight(selectorHeight);
+        m_breakMinutes->setMinimumWidth(pomodoroNumberWidth);
+    }
+    if (m_pomodoroTaskTimingButton != nullptr) {
+        m_pomodoroTaskTimingButton->setMinimumHeight(scaledMetric(40, 30));
+    }
+    if (m_pomodoroDial != nullptr) {
+        m_pomodoroDial->setFixedSize(pomodoroDialSize, pomodoroDialSize);
+    }
+    if (m_startPauseButton != nullptr) {
+        m_startPauseButton->setMinimumHeight(fieldHeight);
+    }
+    if (m_stopPomodoroButton != nullptr) {
+        m_stopPomodoroButton->setMinimumHeight(fieldHeight);
+    }
+    if (m_resetButton != nullptr) {
+        m_resetButton->setMinimumHeight(fieldHeight);
+    }
+    if (m_pomodoroFocusCardButton != nullptr) {
+        m_pomodoroFocusCardButton->setMinimumHeight(fieldHeight);
+    }
+    if (m_pomodoroHistoryCard != nullptr) {
+        m_pomodoroHistoryCard->setMinimumHeight(pomodoroHistoryHeight);
+    }
+
+    if (m_tagTimingChart != nullptr) {
+        m_tagTimingChart->setMinimumHeight(chartHeight);
+    }
+    if (m_tagFocusChart != nullptr) {
+        m_tagFocusChart->setMinimumHeight(chartHeight);
+    }
+    if (m_totalTodayCard != nullptr) {
+        m_totalTodayCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_completedTodayCard != nullptr) {
+        m_completedTodayCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_completionRateCard != nullptr) {
+        m_completionRateCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_focusTodayCard != nullptr) {
+        m_focusTodayCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_focusWeekCard != nullptr) {
+        m_focusWeekCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_taskTimingTodayCard != nullptr) {
+        m_taskTimingTodayCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_activeTaskTimingCard != nullptr) {
+        m_activeTaskTimingCard->setMinimumHeight(metricCardHeight);
+    }
+    if (m_statsHeroLabel != nullptr) {
+        m_statsHeroLabel->setMinimumHeight(heroCardHeight);
+    }
+    if (m_statsFocusInsightLabel != nullptr) {
+        m_statsFocusInsightLabel->setMinimumHeight(narrativeCardHeight);
+    }
+    if (m_statsTimingInsightLabel != nullptr) {
+        m_statsTimingInsightLabel->setMinimumHeight(narrativeCardHeight);
+    }
+
+    QFont baseFont = font();
+    baseFont.setPointSizeF(qBound(9.0, 10.5 * m_uiScale, 10.5));
+    setFont(baseFont);
+}
+
 void MainWindow::loadUiState() {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    const QRect availableGeometry = availableGeometryForWindow(this);
+    QSize targetSize = fixedWindowSizeForGeometry(availableGeometry);
+    m_uiScale = static_cast<double>(targetSize.width()) / static_cast<double>(kBaseWindowWidth);
+    applyTheme();
     m_windowLayoutMode = WindowLayoutMode::Compact;
     applyWindowLayoutMode();
+    applyScaledMetrics();
+    ensurePolished();
+    if (QLayout *centralLayout = centralWidget() != nullptr ? centralWidget()->layout() : nullptr; centralLayout != nullptr) {
+        centralLayout->activate();
+    }
+    targetSize = boundedWindowSize(availableGeometry, targetSize, minimumSizeHint().expandedTo(sizeHint()));
+    m_uiScale = static_cast<double>(targetSize.width()) / static_cast<double>(kBaseWindowWidth);
+    applyTheme();
+    applyWindowLayoutMode();
+    applyScaledMetrics();
+    setFixedSize(targetSize);
 
     m_selectedDate = QDate::currentDate();
     if (m_dateNavigator != nullptr) {
@@ -906,7 +1190,10 @@ void MainWindow::loadUiState() {
 
     const QPoint savedPosition = settings.value("window/position").toPoint();
     if (!savedPosition.isNull()) {
-        move(savedPosition);
+        move(boundedTopLeft(availableGeometry, frameGeometry().size(), savedPosition));
+    } else {
+        move(boundedTopLeft(availableGeometry, frameGeometry().size(),
+                            centeredTopLeft(availableGeometry, frameGeometry().size())));
     }
     m_trayHintShown = settings.value("tray/hint_shown", false).toBool();
 }
@@ -914,7 +1201,9 @@ void MainWindow::loadUiState() {
 void MainWindow::saveUiState() const {
     ensureParentDir(settingsFilePath());
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
-    settings.setValue("window/position", pos());
+    const QRect normalRect = isMaximized() ? normalGeometry() : geometry();
+    settings.setValue("window/position", normalRect.topLeft());
+    settings.remove("window/size");
     settings.setValue("window/current_tab", m_tabs != nullptr ? m_tabs->currentIndex() : 0);
     settings.setValue("todo/selected_date", m_selectedDate.toString(Qt::ISODate));
     settings.setValue("todo/view_mode", m_viewModeFilter != nullptr ? m_viewModeFilter->currentData().toInt() : 0);
@@ -928,7 +1217,6 @@ void MainWindow::saveUiState() const {
 
 void MainWindow::applyWindowPresetForTab(int index) {
     Q_UNUSED(index);
-    setFixedSize(560, 860);
 }
 
 void MainWindow::setWindowLayoutMode(WindowLayoutMode mode) {
@@ -942,30 +1230,34 @@ void MainWindow::setWindowLayoutMode(WindowLayoutMode mode) {
 
 void MainWindow::applyWindowLayoutMode() {
     const bool compact = true;
+    const int contentMargin = scaledMetric(compact ? 16 : 28, 10);
+    const int contentSpacing = scaledMetric(compact ? 14 : 18, 8);
+    const int workspaceSpacing = scaledMetric(compact ? 14 : 20, 8);
+    const int rowSpacing = scaledMetric(compact ? 10 : 14, 6);
 
     if (m_todoContentLayout != nullptr) {
-        m_todoContentLayout->setContentsMargins(compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28);
-        m_todoContentLayout->setSpacing(compact ? 14 : 18);
+        m_todoContentLayout->setContentsMargins(contentMargin, contentMargin, contentMargin, contentMargin);
+        m_todoContentLayout->setSpacing(contentSpacing);
     }
 
     if (m_todoWorkspaceLayout != nullptr) {
         m_todoWorkspaceLayout->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
-        m_todoWorkspaceLayout->setSpacing(compact ? 14 : 20);
+        m_todoWorkspaceLayout->setSpacing(workspaceSpacing);
     }
 
     if (m_todoMetaRow != nullptr) {
         m_todoMetaRow->setDirection(QBoxLayout::LeftToRight);
-        m_todoMetaRow->setSpacing(compact ? 10 : 14);
+        m_todoMetaRow->setSpacing(rowSpacing);
     }
 
     if (m_todoBottomRow != nullptr) {
         m_todoBottomRow->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
-        m_todoBottomRow->setSpacing(compact ? 10 : 14);
+        m_todoBottomRow->setSpacing(rowSpacing);
     }
 
     if (m_todoSidebarCard != nullptr) {
-        m_todoSidebarCard->setMinimumWidth(compact ? 0 : 344);
-        m_todoSidebarCard->setMaximumWidth(compact ? QWIDGETSIZE_MAX : 364);
+        m_todoSidebarCard->setMinimumWidth(compact ? 0 : scaledMetric(344, 240));
+        m_todoSidebarCard->setMaximumWidth(compact ? QWIDGETSIZE_MAX : scaledMetric(364, 260));
     }
     if (m_todoStandardPanel != nullptr) {
         m_todoStandardPanel->setVisible(true);
@@ -984,11 +1276,11 @@ void MainWindow::applyWindowLayoutMode() {
     }
 
     if (m_todoEditorCard != nullptr) {
-        m_todoEditorCard->setMinimumHeight(compact ? 0 : 228);
+        m_todoEditorCard->setMinimumHeight(compact ? 0 : scaledMetric(228, 160));
     }
 
     if (m_dateNavigator != nullptr) {
-        m_dateNavigator->setFixedHeight(compact ? 204 : 232);
+        m_dateNavigator->setFixedHeight(compact ? scaledMetric(204, 150) : scaledMetric(232, 170));
     }
 
     if (m_todoList != nullptr) {
@@ -996,8 +1288,8 @@ void MainWindow::applyWindowLayoutMode() {
     }
 
     if (m_statsContentLayout != nullptr) {
-        m_statsContentLayout->setContentsMargins(compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28, compact ? 16 : 28);
-        m_statsContentLayout->setSpacing(compact ? 14 : 16);
+        m_statsContentLayout->setContentsMargins(contentMargin, contentMargin, contentMargin, contentMargin);
+        m_statsContentLayout->setSpacing(scaledMetric(compact ? 14 : 16, 8));
     }
     if (m_pomodoroPresetPanel != nullptr) {
         m_pomodoroPresetPanel->setVisible(true);
@@ -1031,10 +1323,10 @@ void MainWindow::rebuildStatsMetricLayout() {
     if (m_activeTaskTimingCard != nullptr) {
         m_activeTaskTimingCard->setVisible(true);
     }
-    m_statsOverviewGrid->setHorizontalSpacing(compact ? 10 : 14);
-    m_statsOverviewGrid->setVerticalSpacing(compact ? 10 : 14);
-    m_statsDetailGrid->setHorizontalSpacing(compact ? 10 : 14);
-    m_statsDetailGrid->setVerticalSpacing(compact ? 10 : 14);
+    m_statsOverviewGrid->setHorizontalSpacing(scaledMetric(compact ? 10 : 14, 6));
+    m_statsOverviewGrid->setVerticalSpacing(scaledMetric(compact ? 10 : 14, 6));
+    m_statsDetailGrid->setHorizontalSpacing(scaledMetric(compact ? 10 : 14, 6));
+    m_statsDetailGrid->setVerticalSpacing(scaledMetric(compact ? 10 : 14, 6));
 
     if (compact) {
         m_statsOverviewGrid->addWidget(m_totalTodayCard, 0, 0);
@@ -1138,22 +1430,34 @@ QWidget *MainWindow::buildTodoTab() {
     layout->setSpacing(18);
     m_todoContentLayout = layout;
 
-    auto *headerLayout = new QHBoxLayout();
-    headerLayout->setSpacing(12);
+    auto *headerLayout = new QVBoxLayout();
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(10);
+    auto *headerTitleRow = new QHBoxLayout();
+    headerTitleRow->setContentsMargins(0, 0, 0, 0);
+    headerTitleRow->setSpacing(8);
     m_todayLabel = new QLabel(tab);
     m_todayLabel->setObjectName("pageTitle");
+    m_todayLabel->setWordWrap(true);
 
     m_todoSummaryLabel = new QLabel(tab);
     m_todoSummaryLabel->setObjectName("summaryPill");
+    m_todoSummaryLabel->setWordWrap(true);
 
     m_filterToggleButton = new QPushButton("视图与筛选", tab);
     m_filterToggleButton->setObjectName("secondaryButton");
     m_filterToggleButton->setMinimumHeight(36);
 
-    headerLayout->addWidget(m_todayLabel);
-    headerLayout->addStretch(1);
-    headerLayout->addWidget(m_filterToggleButton);
-    headerLayout->addWidget(m_todoSummaryLabel);
+    headerTitleRow->addWidget(m_todayLabel, 1);
+    headerLayout->addLayout(headerTitleRow);
+
+    auto *headerActionPanel = new QWidget(content);
+    auto *headerActionFlow = new FlowLayout(headerActionPanel, 0, 10, 10);
+    m_filterToggleButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_todoSummaryLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    headerActionFlow->addWidget(m_filterToggleButton);
+    headerActionFlow->addWidget(m_todoSummaryLabel);
+    headerLayout->addWidget(headerActionPanel);
 
     m_overdueReminderLabel = new QLabel(tab);
     m_overdueReminderLabel->setObjectName("overdueBanner");
@@ -1166,8 +1470,8 @@ QWidget *MainWindow::buildTodoTab() {
     compactDateLayout->setContentsMargins(14, 14, 14, 14);
     compactDateLayout->setSpacing(10);
 
-    auto *compactDateTopRow = new QHBoxLayout();
-    compactDateTopRow->setSpacing(8);
+    auto *compactDateButtonPanel = new QWidget(compactDatePanel);
+    auto *compactDateTopRow = new FlowLayout(compactDateButtonPanel, 0, 8, 8);
     auto *compactPrevButton = new QPushButton("前一天", compactDatePanel);
     compactPrevButton->setObjectName("secondaryButton");
     compactPrevButton->setMinimumHeight(34);
@@ -1180,6 +1484,10 @@ QWidget *MainWindow::buildTodoTab() {
     auto *compactPickDateButton = new QPushButton("选日期", compactDatePanel);
     compactPickDateButton->setObjectName("secondaryButton");
     compactPickDateButton->setMinimumHeight(34);
+    compactPrevButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    compactTodayButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    compactNextButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    compactPickDateButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_compactSelectedDateLabel = new QLabel(formatDateTitle(m_selectedDate), compactDatePanel);
     m_compactSelectedDateLabel->setObjectName("sectionTitleSmall");
     m_compactSelectedDateLabel->setWordWrap(true);
@@ -1187,14 +1495,13 @@ QWidget *MainWindow::buildTodoTab() {
     compactDateTopRow->addWidget(compactTodayButton);
     compactDateTopRow->addWidget(compactNextButton);
     compactDateTopRow->addWidget(compactPickDateButton);
-    compactDateTopRow->addStretch(1);
 
     auto *compactDateLabelRow = new QHBoxLayout();
     compactDateLabelRow->setContentsMargins(0, 0, 0, 0);
     compactDateLabelRow->addWidget(m_compactSelectedDateLabel);
     compactDateLabelRow->addStretch(1);
 
-    compactDateLayout->addLayout(compactDateTopRow);
+    compactDateLayout->addWidget(compactDateButtonPanel);
     compactDateLayout->addLayout(compactDateLabelRow);
 
     auto *workspaceLayout = new QHBoxLayout();
@@ -1587,9 +1894,12 @@ QWidget *MainWindow::buildTodoTab() {
     m_compactDoneCountLabel->setObjectName("sidebarStatCard");
     m_compactFocusCountLabel = new QLabel(compactSummaryPanel);
     m_compactFocusCountLabel->setObjectName("sidebarStatCard");
+    m_compactTaskCountLabel->setWordWrap(true);
+    m_compactDoneCountLabel->setWordWrap(true);
+    m_compactFocusCountLabel->setWordWrap(true);
     compactSummaryLayout->addWidget(m_compactTaskCountLabel, 0, 0);
     compactSummaryLayout->addWidget(m_compactDoneCountLabel, 0, 1);
-    compactSummaryLayout->addWidget(m_compactFocusCountLabel, 0, 2);
+    compactSummaryLayout->addWidget(m_compactFocusCountLabel, 1, 0, 1, 2);
 
     auto *planCard = new QFrame(content);
     planCard->setObjectName("surfaceCard");
@@ -2334,13 +2644,14 @@ void MainWindow::refreshTodoList() {
     if (visibleTodos.isEmpty()) {
         auto *emptyItem = new QListWidgetItem(m_todoList);
         emptyItem->setFlags(Qt::NoItemFlags);
-        emptyItem->setSizeHint(QSize(0, 150));
+        emptyItem->setSizeHint(QSize(0, scaledMetric(112, 88)));
 
         auto *emptyCard = new QFrame(m_todoList);
         emptyCard->setObjectName("emptyStateCard");
         auto *emptyLayout = new QVBoxLayout(emptyCard);
-        emptyLayout->setContentsMargins(20, 20, 20, 20);
-        emptyLayout->setSpacing(8);
+        emptyLayout->setContentsMargins(scaledMetric(16, 12), scaledMetric(16, 12),
+                                        scaledMetric(16, 12), scaledMetric(16, 12));
+        emptyLayout->setSpacing(scaledMetric(6, 4));
 
         auto *emptyTitle = new QLabel("当前没有可显示的任务", emptyCard);
         emptyTitle->setObjectName("emptyStateTitle");
@@ -2399,9 +2710,9 @@ void MainWindow::refreshTodoList() {
             contentHeight += (m_todoList->count() - 1) * m_todoList->spacing();
         }
 
-        const int framePadding = 12;
-        const int minHeight = visibleTodos.isEmpty() ? 160 : 0;
-        const int maxHeight = 360;
+        const int framePadding = scaledMetric(10, 8);
+        const int minHeight = visibleTodos.isEmpty() ? scaledMetric(124, 96) : 0;
+        const int maxHeight = qMax(scaledMetric(180, 140), qRound(height() * 0.24));
         const int targetHeight = qBound(minHeight, contentHeight + framePadding, maxHeight);
         m_todoList->setFixedHeight(targetHeight);
         m_todoList->setVerticalScrollBarPolicy(targetHeight >= maxHeight
@@ -2436,13 +2747,14 @@ void MainWindow::refreshPlanList() {
         for (const TodoPlan &plan : sortedPlans) {
             auto *item = new QListWidgetItem(m_planList);
             item->setFlags(Qt::ItemIsEnabled);
-            item->setSizeHint(QSize(0, 72));
+            item->setSizeHint(QSize(0, scaledMetric(64, 52)));
 
             auto *card = new QFrame(m_planList);
             card->setObjectName("surfaceCardSoft");
             auto *layout = new QHBoxLayout(card);
-            layout->setContentsMargins(10, 8, 10, 8);
-            layout->setSpacing(8);
+            layout->setContentsMargins(scaledMetric(8, 6), scaledMetric(6, 4),
+                                       scaledMetric(8, 6), scaledMetric(6, 4));
+            layout->setSpacing(scaledMetric(6, 4));
 
             auto *textWrap = new QVBoxLayout();
             textWrap->setContentsMargins(0, 0, 0, 0);
@@ -2464,15 +2776,15 @@ void MainWindow::refreshPlanList() {
 
         auto *toggleButton = new QPushButton(plan.paused ? "恢复" : "暂停", card);
         toggleButton->setObjectName("secondaryButton");
-        toggleButton->setMinimumHeight(34);
+        toggleButton->setMinimumHeight(scaledMetric(30, 24));
 
         auto *editButton = new QPushButton("编辑", card);
         editButton->setObjectName("secondaryButton");
-        editButton->setMinimumHeight(34);
+        editButton->setMinimumHeight(scaledMetric(30, 24));
 
         auto *removeButton = new QPushButton("删除", card);
         removeButton->setObjectName("secondaryButton");
-        removeButton->setMinimumHeight(34);
+        removeButton->setMinimumHeight(scaledMetric(30, 24));
 
         layout->addLayout(textWrap, 1);
         layout->addWidget(toggleButton, 0, Qt::AlignVCenter);
@@ -2730,9 +3042,9 @@ void MainWindow::refreshPlanList() {
         contentHeight += (m_planList->count() - 1) * m_planList->spacing();
     }
 
-    const int framePadding = 8;
-    const int minHeight = 52;
-    const int maxHeight = 220;
+    const int framePadding = scaledMetric(6, 4);
+    const int minHeight = scaledMetric(42, 34);
+    const int maxHeight = qMax(scaledMetric(108, 84), qRound(height() * 0.16));
     const int targetHeight = qBound(minHeight, contentHeight + framePadding, maxHeight);
     m_planList->setFixedHeight(targetHeight);
     m_planList->setVerticalScrollBarPolicy(targetHeight >= maxHeight
@@ -3496,7 +3808,8 @@ void MainWindow::refreshCalendarHighlights(const QList<TodoItem> &allTodos) {
 }
 
 void MainWindow::applyTheme() {
-    setStyleSheet(R"(
+    const QString baseStyle =
+        QStringLiteral(R"(
         QMainWindow#HTodoWindow {
             background: #f5f5f5;
         }
@@ -3923,6 +4236,8 @@ void MainWindow::applyTheme() {
             background: #ecf5ff;
             color: #576b95;
         }
+)")
+        + QStringLiteral(R"(
         QPushButton {
             background: #f2f2f2;
             border: 1px solid #e5e5e5;
@@ -4053,6 +4368,8 @@ void MainWindow::applyTheme() {
         QLabel#emptyStateMeta {
             color: #7a7a7a;
         }
+)")
+        + QStringLiteral(R"(
         QLabel#summaryPill {
             background: #eaf8f0;
             border-radius: 16px;
@@ -4150,6 +4467,7 @@ void MainWindow::applyTheme() {
             border-top: 1px solid #e8e8e8;
         }
     )");
+    setStyleSheet(scaleStyleSheetPixels(baseStyle, m_uiScale));
 
     QTextCharFormat weekdayFormat;
     weekdayFormat.setForeground(QColor("#2f3437"));

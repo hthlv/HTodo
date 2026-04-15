@@ -90,6 +90,7 @@ private:
     bool m_quitRequested = false;
     bool m_trayHintShown = false;
     QPoint m_lastFocusCardTopLeft = QPoint(-1, -1);
+    double m_uiScale = 1.0;
 
     QTabWidget *m_tabs = nullptr;
     RoundedComboBox *m_layoutModeSelector = nullptr;
@@ -233,6 +234,8 @@ private:
     void setupTrayIcon();
     void updateTrayActions();
     void showFromTray();
+    int scaledMetric(int baseValue, int minimum = 1) const;
+    void applyScaledMetrics();
     void applyTheme();
     QWidget *createTodoCard(const TodoItem &todo);
     void refreshDateSidebar(const QList<TodoItem> &allTodos);
