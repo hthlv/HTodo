@@ -49,6 +49,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QTextCharFormat>
+#include <QAbstractSpinBox>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
@@ -155,7 +156,6 @@ private:
 };
 
 constexpr auto kSelectedTagsProperty = "selectedTags";
-
 QString appConfigDirPath() {
     const QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
     if (!configPath.isEmpty()) {
@@ -179,6 +179,24 @@ bool ensureParentDir(const QString &filePath) {
     const QFileInfo fileInfo(filePath);
     QDir dir(fileInfo.absolutePath());
     return dir.exists() || dir.mkpath(".");
+}
+
+QLabel *ensureTrailingIcon(QWidget *field, const QString &objectName) {
+    if (field == nullptr) {
+        return nullptr;
+    }
+
+    if (QLabel *icon = field->findChild<QLabel *>(objectName); icon != nullptr) {
+        return icon;
+    }
+
+    auto *icon = new QLabel(field);
+    icon->setObjectName(objectName);
+    icon->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    icon->setPixmap(QPixmap(":/icons/chevron-down.svg"));
+    icon->setScaledContents(false);
+    icon->show();
+    return icon;
 }
 
 QStringList selectedTagsFromInput(const QLineEdit *input) {
@@ -864,7 +882,7 @@ void MainWindow::applyWindowLayoutMode() {
     }
 
     if (m_todoMetaRow != nullptr) {
-        m_todoMetaRow->setDirection(compact ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight);
+        m_todoMetaRow->setDirection(QBoxLayout::LeftToRight);
         m_todoMetaRow->setSpacing(compact ? 10 : 14);
     }
 
@@ -983,12 +1001,24 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         const bool onCalendar = m_dateNavigator != nullptr
                                 && (watched == m_dateNavigator
                                     || (watchedWidget != nullptr && m_dateNavigator->isAncestorOf(watchedWidget)));
+        const bool onTaskPopupCalendar = m_taskDatePopupCalendar != nullptr
+                                         && (watched == m_taskDatePopupCalendar
+                                             || (watchedWidget != nullptr
+                                                 && m_taskDatePopupCalendar->isAncestorOf(watchedWidget)));
+        const bool onDuePopupCalendar = m_dueAtPopupCalendar != nullptr
+                                        && (watched == m_dueAtPopupCalendar
+                                            || (watchedWidget != nullptr
+                                                && m_dueAtPopupCalendar->isAncestorOf(watchedWidget)));
         const bool onTaskDateInput = m_taskDateInput != nullptr
                                      && (watched == m_taskDateInput
                                          || (watchedWidget != nullptr && m_taskDateInput->isAncestorOf(watchedWidget)));
         const bool onDueAtInput = m_dueAtInput != nullptr
                                   && (watched == m_dueAtInput
                                       || (watchedWidget != nullptr && m_dueAtInput->isAncestorOf(watchedWidget)));
+
+        if (onTaskPopupCalendar || onDuePopupCalendar) {
+            return true;
+        }
 
         if (onCalendar || onTaskDateInput || onDueAtInput) {
             if (m_todoScrollArea != nullptr) {
@@ -1227,10 +1257,18 @@ QWidget *MainWindow::buildTodoTab() {
     m_taskDateInput = new QDateEdit(QDate::currentDate(), tab);
     m_taskDateInput->setDisplayFormat("yyyy-MM-dd");
     m_taskDateInput->setCalendarPopup(true);
+    m_taskDateInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_taskDateInput->setMinimumHeight(38);
     m_taskDateInput->installEventFilter(this);
     for (QWidget *child : m_taskDateInput->findChildren<QWidget *>()) {
         child->installEventFilter(this);
+    }
+    m_taskDatePopupCalendar = m_taskDateInput->calendarWidget();
+    if (m_taskDatePopupCalendar != nullptr) {
+        m_taskDatePopupCalendar->installEventFilter(this);
+        for (QWidget *child : m_taskDatePopupCalendar->findChildren<QWidget *>()) {
+            child->installEventFilter(this);
+        }
     }
 
     m_priorityInput = new RoundedComboBox(tab);
@@ -1245,11 +1283,19 @@ QWidget *MainWindow::buildTodoTab() {
     m_dueAtInput = new QDateTimeEdit(QDateTime::currentDateTime(), tab);
     m_dueAtInput->setDisplayFormat("yyyy-MM-dd HH:mm");
     m_dueAtInput->setCalendarPopup(true);
+    m_dueAtInput->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_dueAtInput->setEnabled(false);
     m_dueAtInput->setMinimumHeight(38);
     m_dueAtInput->installEventFilter(this);
     for (QWidget *child : m_dueAtInput->findChildren<QWidget *>()) {
         child->installEventFilter(this);
+    }
+    m_dueAtPopupCalendar = m_dueAtInput->calendarWidget();
+    if (m_dueAtPopupCalendar != nullptr) {
+        m_dueAtPopupCalendar->installEventFilter(this);
+        for (QWidget *child : m_dueAtPopupCalendar->findChildren<QWidget *>()) {
+            child->installEventFilter(this);
+        }
     }
 
     m_tagInput = new QLineEdit(tab);
@@ -1317,21 +1363,21 @@ QWidget *MainWindow::buildTodoTab() {
     standardPanelLayout->setSpacing(10);
 
     auto *metaRow = new QHBoxLayout();
-    metaRow->setSpacing(10);
+    metaRow->setSpacing(8);
     m_todoMetaRow = metaRow;
 
     auto *dateField = new QWidget(tab);
     m_todoDateField = dateField;
     auto *dateFieldLayout = new QVBoxLayout(dateField);
     dateFieldLayout->setContentsMargins(0, 0, 0, 0);
-    dateFieldLayout->setSpacing(6);
+    dateFieldLayout->setSpacing(4);
     dateFieldLayout->addWidget(new QLabel("任务日期", dateField));
     dateFieldLayout->addWidget(m_taskDateInput);
 
     auto *priorityField = new QWidget(tab);
     auto *priorityFieldLayout = new QVBoxLayout(priorityField);
     priorityFieldLayout->setContentsMargins(0, 0, 0, 0);
-    priorityFieldLayout->setSpacing(6);
+    priorityFieldLayout->setSpacing(4);
     priorityFieldLayout->addWidget(new QLabel("优先级", priorityField));
     priorityFieldLayout->addWidget(m_priorityInput);
 
@@ -1339,12 +1385,13 @@ QWidget *MainWindow::buildTodoTab() {
     m_todoDueField = dueField;
     auto *dueFieldLayout = new QVBoxLayout(dueField);
     dueFieldLayout->setContentsMargins(0, 0, 0, 0);
-    dueFieldLayout->setSpacing(6);
+    dueFieldLayout->setSpacing(4);
     dueFieldLayout->addWidget(m_dueAtEnabled);
     dueFieldLayout->addWidget(m_dueAtInput);
-
-    metaRow->addWidget(dateField, 3);
-    metaRow->addWidget(dueField, 4);
+ 
+    metaRow->addWidget(dateField, 4);
+    metaRow->addWidget(dueField, 5);
+    metaRow->addWidget(priorityField, 2);
 
     auto *bottomRow = new QHBoxLayout();
     bottomRow->setSpacing(10);
@@ -1414,12 +1461,7 @@ QWidget *MainWindow::buildTodoTab() {
         }
     });
 
-    auto *priorityRow = new QHBoxLayout();
-    priorityRow->setSpacing(10);
-    priorityRow->addWidget(priorityField, 1);
-
     standardPanelLayout->addLayout(metaRow);
-    standardPanelLayout->addLayout(priorityRow);
     standardPanelLayout->addLayout(bottomRow);
     editorLayout->addWidget(taskField);
     editorLayout->addWidget(standardPanel);
@@ -3526,18 +3568,27 @@ void MainWindow::applyTheme() {
             subcontrol-position: top right;
             width: 28px;
             border: 0;
-            background: transparent;
+            border-left: 1px solid #ececec;
+            background: #fafafa;
             border-top-right-radius: 14px;
             border-bottom-right-radius: 14px;
         }
-        QComboBox::down-arrow, QDateEdit::down-arrow, QDateTimeEdit::down-arrow {
+        QComboBox::down-arrow {
             image: none;
             width: 0px;
             height: 0px;
         }
-        QComboBox::down-arrow:on, QDateEdit::down-arrow:on, QDateTimeEdit::down-arrow:on {
+        QComboBox::down-arrow:on {
             top: 0px;
             left: 0px;
+        }
+        QDateEdit::down-arrow, QDateTimeEdit::down-arrow, QComboBox::down-arrow {
+            image: url(:/icons/chevron-down.svg);
+            width: 12px;
+            height: 12px;
+        }
+        QDateEdit::drop-down:hover, QDateTimeEdit::drop-down:hover {
+            background: #f3f3f3;
         }
         QFrame#roundedComboPopup {
             background: #ffffff;
@@ -3561,12 +3612,12 @@ void MainWindow::applyTheme() {
             background: #eaf8f0;
             color: #191919;
         }
-        QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+        QSpinBox::up-button, QSpinBox::down-button {
             width: 20px;
             border: 0;
             background: transparent;
         }
-        QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {
+        QSpinBox::up-arrow, QSpinBox::down-arrow {
             image: none;
             width: 0px;
             height: 0px;

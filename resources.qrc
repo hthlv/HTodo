@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
+        <file alias="icons/chevron-down.svg">icons/chevron-down.svg</file>
         <file alias="icons/htodo.png">icons/htodo.png</file>
     </qresource>
 </RCC>

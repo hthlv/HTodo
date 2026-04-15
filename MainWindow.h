@@ -118,9 +118,11 @@ private:
     QPushButton *m_todayQuickButton = nullptr;
     QPushButton *m_nextDayButton = nullptr;
     QDateEdit *m_taskDateInput = nullptr;
+    QCalendarWidget *m_taskDatePopupCalendar = nullptr;
     RoundedComboBox *m_priorityInput = nullptr;
     QCheckBox *m_dueAtEnabled = nullptr;
     QDateTimeEdit *m_dueAtInput = nullptr;
+    QCalendarWidget *m_dueAtPopupCalendar = nullptr;
     QLineEdit *m_tagInput = nullptr;
     QPushButton *m_addTodoButton = nullptr;
     QPushButton *m_cancelEditButton = nullptr;
@@ -210,6 +212,7 @@ private:
     void refreshTagPresets();
     void refreshPomodoroTaskTimingPanel();
     void positionTagPopup();
+    void updateDateFieldIndicators();
     void togglePomodoroFocusCard();
     void showPomodoroFocusCard();
     void hidePomodoroFocusCard(bool restoreMainWindow);
