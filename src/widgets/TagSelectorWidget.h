@@ -18,6 +18,7 @@ public:
     void setSelectedTags(const QStringList &tags);
     QStringList selectedTags() const;
     void setPlaceholderText(const QString &text);
+    void setManualEntryEnabled(bool enabled);
 
 signals:
     void tagsChanged();
@@ -29,6 +30,7 @@ private:
     class FlowLayout;
 
     QStringList normalizedTags(const QStringList &tags) const;
+    void refreshContainerGeometry();
     void promoteManualTags();
     void refreshSelectedTags();
     void refreshPopup();
@@ -38,6 +40,7 @@ private:
 
     QStringList m_availableTags;
     QStringList m_selectedTags;
+    bool m_manualEntryEnabled = true;
 
     QWidget *m_selectedPanel = nullptr;
     FlowLayout *m_selectedLayout = nullptr;

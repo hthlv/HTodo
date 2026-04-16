@@ -171,7 +171,6 @@ protected:
     }
 };
 
-constexpr auto kSelectedTagsProperty = "selectedTags";
 constexpr int kBaseWindowWidth = 560;
 constexpr int kBaseWindowHeight = 860;
 constexpr double kTargetScreenWidthRatio = 0.92;
@@ -415,21 +414,6 @@ bool todoCoversDate(const TodoItem &todo, const QDate &date) {
 
     return date >= todo.date && date <= todoDisplayEndDate(todo);
 }
-
-QStringList selectedTagsFromInput(const QLineEdit *input) {
-    if (input == nullptr) {
-        return {};
-    }
-    return input->property(kSelectedTagsProperty).toStringList();
-}
-
-void setSelectedTagsOnInput(QLineEdit *input, const QStringList &tags) {
-    if (input == nullptr) {
-        return;
-    }
-    input->setProperty(kSelectedTagsProperty, tags);
-}
-
 
 void setElidedLabelText(QLabel *label, const QString &text, int maxWidth) {
     if (label == nullptr) {
@@ -744,14 +728,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         refreshTodoList();
         saveUiState();
     });
-    connect(m_tagFilterInput, &QLineEdit::textChanged, this, [this]() {
+    connect(m_tagFilterInput, &TagSelectorWidget::tagsChanged, this, [this]() {
         refreshTodoList();
         saveUiState();
     });
     connect(m_clearFilterButton, &QPushButton::clicked, this, [this]() {
         m_viewModeFilter->setCurrentIndex(0);
         m_priorityFilter->setCurrentIndex(0);
-        m_tagFilterInput->clear();
+        if (m_tagFilterInput != nullptr) {
+            m_tagFilterInput->setSelectedTags({});
+        }
     });
 
     connect(m_startPauseButton, &QPushButton::clicked, this, &MainWindow::togglePomodoro);
@@ -1276,7 +1262,15 @@ void MainWindow::loadUiState() {
 
     if (m_tagFilterInput != nullptr) {
         const QSignalBlocker blocker(m_tagFilterInput);
-        m_tagFilterInput->setText(settings.value("todo/tag_filter").toString());
+        m_tagFilterInput->setAvailableTags(m_storage.availableTags());
+        QStringList savedTags = settings.value("todo/tag_filter_tags").toStringList();
+        if (savedTags.isEmpty()) {
+            const QString legacyTagFilter = settings.value("todo/tag_filter").toString().trimmed();
+            if (!legacyTagFilter.isEmpty()) {
+                savedTags = {legacyTagFilter};
+            }
+        }
+        m_tagFilterInput->setSelectedTags(savedTags);
     }
 
     if (m_focusMinutes != nullptr) {
@@ -1335,7 +1329,9 @@ void MainWindow::saveUiState() const {
     settings.setValue("todo/selected_date", m_selectedDate.toString(Qt::ISODate));
     settings.setValue("todo/view_mode", m_viewModeFilter != nullptr ? m_viewModeFilter->currentData().toInt() : 0);
     settings.setValue("todo/priority_filter", m_priorityFilter != nullptr ? m_priorityFilter->currentData().toInt() : -1);
-    settings.setValue("todo/tag_filter", m_tagFilterInput != nullptr ? m_tagFilterInput->text() : QString());
+    settings.setValue("todo/tag_filter_tags",
+                      m_tagFilterInput != nullptr ? m_tagFilterInput->selectedTags() : QStringList());
+    settings.remove("todo/tag_filter");
     settings.setValue("pomodoro/focus_minutes", m_focusMinutes != nullptr ? m_focusMinutes->value() : 25);
     settings.setValue("pomodoro/break_minutes", m_breakMinutes != nullptr ? m_breakMinutes->value() : 5);
     settings.setValue("tray/hint_shown", m_trayHintShown);
@@ -1918,52 +1914,87 @@ QWidget *MainWindow::buildTodoTab() {
 
     auto *filterPopup = new QFrame(tab, Qt::Popup | Qt::FramelessWindowHint);
     filterPopup->setObjectName("floatingPanel");
+    filterPopup->setAttribute(Qt::WA_TranslucentBackground, true);
     filterPopup->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
-    auto *filterCardLayout = new QVBoxLayout(filterPopup);
-    filterCardLayout->setContentsMargins(16, 14, 16, 14);
-    filterCardLayout->setSpacing(10);
+    auto *filterRootLayout = new QVBoxLayout(filterPopup);
+    filterRootLayout->setContentsMargins(8, 8, 8, 8);
+    filterRootLayout->setSpacing(0);
 
-    auto *filterCaption = new QLabel("视图与筛选", filterPopup);
+    auto *filterSurface = new QFrame(filterPopup);
+    filterSurface->setObjectName("floatingPanelSurface");
+    filterRootLayout->addWidget(filterSurface);
+
+    auto *filterCardLayout = new QVBoxLayout(filterSurface);
+    filterCardLayout->setContentsMargins(18, 18, 18, 18);
+    filterCardLayout->setSpacing(14);
+
+    auto *filterCaption = new QLabel("视图与筛选", filterSurface);
     filterCaption->setObjectName("sectionTitleSmall");
-    auto *filterLayout = new QVBoxLayout();
-    filterLayout->setSpacing(10);
+    auto *filterHint = new QLabel("只影响当前任务列表的显示范围，不会修改任务数据。", filterSurface);
+    filterHint->setObjectName("mutedText");
+    filterHint->setWordWrap(true);
 
-    auto *filterTopRow = new QHBoxLayout();
-    filterTopRow->setSpacing(12);
-    filterTopRow->addWidget(new QLabel("视图", filterPopup));
-    m_viewModeFilter = new RoundedComboBox(filterPopup);
+    auto *filterGrid = new QGridLayout();
+    filterGrid->setHorizontalSpacing(12);
+    filterGrid->setVerticalSpacing(12);
+
+    auto *viewWrap = new QWidget(filterSurface);
+    auto *viewWrapLayout = new QVBoxLayout(viewWrap);
+    viewWrapLayout->setContentsMargins(0, 0, 0, 0);
+    viewWrapLayout->setSpacing(6);
+    auto *viewLabel = new QLabel("视图", viewWrap);
+    viewLabel->setObjectName("mutedText");
+    m_viewModeFilter = new RoundedComboBox(filterSurface);
     m_viewModeFilter->setObjectName("filterCombo");
     m_viewModeFilter->addItem("今日视图", static_cast<int>(TodoListMode::Today));
     m_viewModeFilter->addItem("全部任务", static_cast<int>(TodoListMode::All));
     m_viewModeFilter->addItem("已完成归档", static_cast<int>(TodoListMode::Archive));
     configureComboBox(m_viewModeFilter, 138);
-    filterTopRow->addWidget(m_viewModeFilter);
+    m_viewModeFilter->setMinimumHeight(42);
+    viewWrapLayout->addWidget(viewLabel);
+    viewWrapLayout->addWidget(m_viewModeFilter);
 
-    filterTopRow->addWidget(new QLabel("筛选优先级", filterPopup));
-    m_priorityFilter = new RoundedComboBox(filterPopup);
+    auto *priorityWrap = new QWidget(filterSurface);
+    auto *priorityWrapLayout = new QVBoxLayout(priorityWrap);
+    priorityWrapLayout->setContentsMargins(0, 0, 0, 0);
+    priorityWrapLayout->setSpacing(6);
+    auto *priorityLabel = new QLabel("筛选优先级", priorityWrap);
+    priorityLabel->setObjectName("mutedText");
+    m_priorityFilter = new RoundedComboBox(filterSurface);
     m_priorityFilter->setObjectName("filterCombo");
     m_priorityFilter->addItem("全部", -1);
     m_priorityFilter->addItem("高", static_cast<int>(TaskPriority::High));
     m_priorityFilter->addItem("中", static_cast<int>(TaskPriority::Medium));
     m_priorityFilter->addItem("低", static_cast<int>(TaskPriority::Low));
     configureComboBox(m_priorityFilter, 108);
-    filterTopRow->addWidget(m_priorityFilter);
-    filterTopRow->addStretch(1);
+    m_priorityFilter->setMinimumHeight(42);
+    priorityWrapLayout->addWidget(priorityLabel);
+    priorityWrapLayout->addWidget(m_priorityFilter);
 
-    auto *filterBottomRow = new QHBoxLayout();
-    filterBottomRow->setSpacing(12);
-    filterBottomRow->addWidget(new QLabel("标签", filterPopup));
-    m_tagFilterInput = new QLineEdit(filterPopup);
-    m_tagFilterInput->setPlaceholderText("输入标签关键字");
-    filterBottomRow->addWidget(m_tagFilterInput, 1);
+    auto *tagWrap = new QWidget(filterSurface);
+    auto *tagWrapLayout = new QVBoxLayout(tagWrap);
+    tagWrapLayout->setContentsMargins(0, 0, 0, 0);
+    tagWrapLayout->setSpacing(6);
+    auto *tagLabel = new QLabel("标签", tagWrap);
+    tagLabel->setObjectName("mutedText");
+    m_tagFilterInput = new TagSelectorWidget(filterSurface);
+    m_tagFilterInput->setPlaceholderText("只可选择已有标签");
+    m_tagFilterInput->setAvailableTags(m_storage.availableTags());
+    m_tagFilterInput->setManualEntryEnabled(false);
+    tagWrapLayout->addWidget(tagLabel);
+    tagWrapLayout->addWidget(m_tagFilterInput);
 
-    m_clearFilterButton = new QPushButton("清空筛选", filterPopup);
+    m_clearFilterButton = new QPushButton("清空筛选", filterSurface);
     m_clearFilterButton->setObjectName("secondaryButton");
-    filterBottomRow->addWidget(m_clearFilterButton);
+    m_clearFilterButton->setMinimumHeight(42);
+
+    filterGrid->addWidget(viewWrap, 0, 0);
+    filterGrid->addWidget(priorityWrap, 0, 1);
+    filterGrid->addWidget(tagWrap, 1, 0);
+    filterGrid->addWidget(m_clearFilterButton, 1, 1, Qt::AlignBottom);
     filterCardLayout->addWidget(filterCaption);
-    filterLayout->addLayout(filterTopRow);
-    filterLayout->addLayout(filterBottomRow);
-    filterCardLayout->addLayout(filterLayout);
+    filterCardLayout->addWidget(filterHint);
+    filterCardLayout->addLayout(filterGrid);
     m_filterPopup = filterPopup;
 
     connect(m_filterToggleButton, &QPushButton::clicked, this, [this]() {
@@ -3713,6 +3744,9 @@ void MainWindow::refreshTagPresets() {
     if (m_tagEditor != nullptr) {
         m_tagEditor->setAvailableTags(m_storage.availableTags());
     }
+    if (m_tagFilterInput != nullptr) {
+        m_tagFilterInput->setAvailableTags(m_storage.availableTags());
+    }
 }
 
 void MainWindow::refreshPomodoroTaskTimingPanel() {
@@ -4830,14 +4864,20 @@ bool MainWindow::matchesFilters(const TodoItem &todo) const {
         return false;
     }
 
-    const QString tagFilter = m_tagFilterInput->text().trimmed();
-    if (tagFilter.isEmpty()) {
+    const QStringList selectedFilterTags =
+        m_tagFilterInput != nullptr ? m_tagFilterInput->selectedTags() : QStringList();
+    if (selectedFilterTags.isEmpty()) {
         return true;
     }
 
-    for (const QString &tag : todo.tags) {
-        if (tag.contains(tagFilter, Qt::CaseInsensitive)) {
-            return true;
+    for (const QString &filterTag : selectedFilterTags) {
+        if (filterTag.trimmed().isEmpty()) {
+            continue;
+        }
+        for (const QString &tag : todo.tags) {
+            if (QString::compare(tag, filterTag, Qt::CaseInsensitive) == 0) {
+                return true;
+            }
         }
     }
 

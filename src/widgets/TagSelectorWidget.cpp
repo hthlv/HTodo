@@ -200,6 +200,17 @@ void TagSelectorWidget::setPlaceholderText(const QString &text) {
     }
 }
 
+void TagSelectorWidget::setManualEntryEnabled(bool enabled) {
+    m_manualEntryEnabled = enabled;
+    if (m_input != nullptr) {
+        m_input->setReadOnly(!enabled);
+        m_input->setCursor(enabled ? Qt::IBeamCursor : Qt::PointingHandCursor);
+        if (!enabled) {
+            m_input->clear();
+        }
+    }
+}
+
 bool TagSelectorWidget::eventFilter(QObject *watched, QEvent *event) {
     if (watched == m_input && event->type() == QEvent::MouseButtonPress) {
         refreshPopup();
@@ -233,8 +244,20 @@ QStringList TagSelectorWidget::normalizedTags(const QStringList &tags) const {
     return normalized;
 }
 
+void TagSelectorWidget::refreshContainerGeometry() {
+    updateGeometry();
+    adjustSize();
+
+    QWidget *ancestor = parentWidget();
+    while (ancestor != nullptr) {
+        ancestor->updateGeometry();
+        ancestor->adjustSize();
+        ancestor = ancestor->parentWidget();
+    }
+}
+
 void TagSelectorWidget::promoteManualTags() {
-    if (m_input == nullptr) {
+    if (m_input == nullptr || !m_manualEntryEnabled) {
         return;
     }
 
@@ -316,10 +339,7 @@ void TagSelectorWidget::refreshSelectedTags() {
     m_selectedPanel->setVisible(true);
     m_selectedPanel->updateGeometry();
     m_selectedPanel->adjustSize();
-    if (QWidget *parentWidget = m_selectedPanel->parentWidget(); parentWidget != nullptr) {
-        parentWidget->updateGeometry();
-        parentWidget->adjustSize();
-    }
+    refreshContainerGeometry();
 }
 
 void TagSelectorWidget::refreshPopup() {

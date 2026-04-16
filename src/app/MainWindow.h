@@ -137,7 +137,7 @@ private:
     QPushButton *m_filterToggleButton = nullptr;
     RoundedComboBox *m_viewModeFilter = nullptr;
     RoundedComboBox *m_priorityFilter = nullptr;
-    QLineEdit *m_tagFilterInput = nullptr;
+    TagSelectorWidget *m_tagFilterInput = nullptr;
     QPushButton *m_clearFilterButton = nullptr;
     QWidget *m_filterPopup = nullptr;
     QListWidget *m_todoList = nullptr;
