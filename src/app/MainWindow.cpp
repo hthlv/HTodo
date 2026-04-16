@@ -1503,6 +1503,16 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
                 button->setIcon(QIcon(normalIconPath));
             }
         }
+
+        const QString normalDeleteIconPath = button->property("normalIcon").toString();
+        const QString hoverDeleteIconPath = button->property("hoverIcon").toString();
+        if (!normalDeleteIconPath.isEmpty() && !hoverDeleteIconPath.isEmpty()) {
+            if (event->type() == QEvent::Enter) {
+                button->setIcon(QIcon(hoverDeleteIconPath));
+            } else if (event->type() == QEvent::Leave) {
+                button->setIcon(QIcon(normalDeleteIconPath));
+            }
+        }
     }
 
     if (event->type() == QEvent::Wheel) {
@@ -3900,9 +3910,11 @@ QWidget *MainWindow::createTodoCard(const TodoItem &todo) {
 
     auto *deleteButton = new QPushButton(card);
     deleteButton->setObjectName("cardIconButton");
-    deleteButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
-    deleteButton->setIconSize(QSize(14, 14));
-    deleteButton->setFixedSize(30, 30);
+    deleteButton->setIcon(QIcon(":/icons/delete-task.png"));
+    deleteButton->setProperty("normalIcon", ":/icons/delete-task.png");
+    deleteButton->setProperty("hoverIcon", ":/icons/delete-task-hover.png");
+    deleteButton->setIconSize(QSize(32, 32));
+    deleteButton->setFixedSize(36, 36);
     deleteButton->setToolTip("删除任务");
     actionLayout->addWidget(deleteButton, 0, Qt::AlignVCenter);
     rootLayout->addWidget(actionWrap, 0, Qt::AlignTop);
@@ -4526,15 +4538,13 @@ void MainWindow::applyTheme() {
             margin-right: 6px;
         }
         QPushButton#cardIconButton {
-            background: #fff4f3;
-            color: #fa5151;
-            border: 1px solid #ffd8d5;
-            border-radius: 10px;
+            background: transparent;
+            border: 0;
             padding: 0;
         }
         QPushButton#cardIconButton:hover {
-            background: #ffe8e6;
-            border: 1px solid #ffcac5;
+            background: transparent;
+            border: 0;
         }
         QToolTip {
             background: #fcfcfc;

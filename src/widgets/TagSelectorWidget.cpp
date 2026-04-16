@@ -212,6 +212,18 @@ void TagSelectorWidget::setManualEntryEnabled(bool enabled) {
 }
 
 bool TagSelectorWidget::eventFilter(QObject *watched, QEvent *event) {
+    if (auto *button = qobject_cast<QPushButton *>(watched); button != nullptr) {
+        const QString normalIconPath = button->property("normalIcon").toString();
+        const QString hoverIconPath = button->property("hoverIcon").toString();
+        if (!normalIconPath.isEmpty() && !hoverIconPath.isEmpty()) {
+            if (event->type() == QEvent::Enter) {
+                button->setIcon(QIcon(hoverIconPath));
+            } else if (event->type() == QEvent::Leave) {
+                button->setIcon(QIcon(normalIconPath));
+            }
+        }
+    }
+
     if (watched == m_input && event->type() == QEvent::MouseButtonPress) {
         refreshPopup();
         positionPopup();
@@ -312,21 +324,28 @@ void TagSelectorWidget::refreshSelectedTags() {
         auto *chip = new QFrame(m_selectedPanel);
         chip->setObjectName("surfaceCardSoft");
         auto *chipLayout = new QHBoxLayout(chip);
-        chipLayout->setContentsMargins(10, 6, 8, 6);
+        chipLayout->setContentsMargins(10, 4, 8, 4);
         chipLayout->setSpacing(6);
+        chipLayout->setAlignment(Qt::AlignVCenter);
 
         auto *chipLabel = new QLabel(tag, chip);
         chipLabel->setObjectName("sectionTitleSmall");
         chipLabel->setMaximumWidth(112);
+        chipLabel->setFixedHeight(30);
+        chipLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         chipLabel->setToolTip(tag);
-        chipLayout->addWidget(chipLabel);
+        chipLayout->addWidget(chipLabel, 0, Qt::AlignVCenter);
 
         auto *removeButton = new QPushButton(chip);
         removeButton->setObjectName("cardIconButton");
-        removeButton->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
-        removeButton->setIconSize(QSize(12, 12));
-        removeButton->setFixedSize(22, 22);
-        chipLayout->addWidget(removeButton);
+        removeButton->setIcon(QIcon(":/icons/delete-task.png"));
+        removeButton->setProperty("normalIcon", ":/icons/delete-task.png");
+        removeButton->setProperty("hoverIcon", ":/icons/delete-task-hover.png");
+        removeButton->setIconSize(QSize(22, 22));
+        removeButton->setFixedSize(30, 30);
+        removeButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        removeButton->installEventFilter(this);
+        chipLayout->addWidget(removeButton, 0, Qt::AlignVCenter);
 
         connect(removeButton, &QPushButton::clicked, this, [this, tag]() {
             removeTag(tag);
