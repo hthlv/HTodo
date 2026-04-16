@@ -2033,6 +2033,9 @@ QWidget *MainWindow::buildTodoTab() {
     compactSummaryLayout->setContentsMargins(14, 14, 14, 14);
     compactSummaryLayout->setHorizontalSpacing(10);
     compactSummaryLayout->setVerticalSpacing(10);
+    compactSummaryLayout->setColumnStretch(0, 1);
+    compactSummaryLayout->setColumnStretch(1, 1);
+    compactSummaryLayout->setColumnStretch(2, 1);
     m_compactTaskCountLabel = new QLabel(compactSummaryPanel);
     m_compactTaskCountLabel->setObjectName("sidebarStatCard");
     m_compactDoneCountLabel = new QLabel(compactSummaryPanel);
@@ -2044,7 +2047,7 @@ QWidget *MainWindow::buildTodoTab() {
     m_compactFocusCountLabel->setWordWrap(true);
     compactSummaryLayout->addWidget(m_compactTaskCountLabel, 0, 0);
     compactSummaryLayout->addWidget(m_compactDoneCountLabel, 0, 1);
-    compactSummaryLayout->addWidget(m_compactFocusCountLabel, 1, 0, 1, 2);
+    compactSummaryLayout->addWidget(m_compactFocusCountLabel, 0, 2);
 
     auto *planCard = new QFrame(content);
     planCard->setObjectName("surfaceCard");
