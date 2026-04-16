@@ -103,12 +103,10 @@ private:
     QAction *m_quitAction = nullptr;
     QLocalServer *m_singleInstanceServer = nullptr;
 
-    QLabel *m_todayLabel = nullptr;
-    QLabel *m_todoSummaryLabel = nullptr;
+    QPushButton *m_todayLabel = nullptr;
     QLabel *m_overdueReminderLabel = nullptr;
     QLabel *m_selectedDateLabel = nullptr;
     QLabel *m_selectedDateMetaLabel = nullptr;
-    QLabel *m_compactSelectedDateLabel = nullptr;
     QLabel *m_compactTaskCountLabel = nullptr;
     QLabel *m_compactDoneCountLabel = nullptr;
     QLabel *m_compactFocusCountLabel = nullptr;

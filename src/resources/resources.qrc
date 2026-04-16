@@ -4,5 +4,11 @@
         <file alias="icons/htodo.ico">../../icons/htodo.ico</file>
         <file alias="icons/htodo.png">../../icons/htodo.png</file>
         <file alias="icons/htodo.svg">../../icons/htodo.svg</file>
+        <file alias="icons/nav-filter-hover.png">../../icons/nav-filter-hover.png</file>
+        <file alias="icons/nav-filter.png">../../icons/nav-filter.png</file>
+        <file alias="icons/nav-next-hover.png">../../icons/nav-next-hover.png</file>
+        <file alias="icons/nav-next.png">../../icons/nav-next.png</file>
+        <file alias="icons/nav-prev-hover.png">../../icons/nav-prev-hover.png</file>
+        <file alias="icons/nav-prev.png">../../icons/nav-prev.png</file>
     </qresource>
 </RCC>

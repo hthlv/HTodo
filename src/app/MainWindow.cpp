@@ -694,15 +694,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             m_todoStandardHeaderPanel->hide();
         }
     });
-    connect(m_prevDayButton, &QPushButton::clicked, this, [this]() {
-        m_dateNavigator->setSelectedDate(m_selectedDate.addDays(-1));
-    });
-    connect(m_nextDayButton, &QPushButton::clicked, this, [this]() {
-        m_dateNavigator->setSelectedDate(m_selectedDate.addDays(1));
-    });
-    connect(m_todayQuickButton, &QPushButton::clicked, this, [this]() {
-        m_dateNavigator->setSelectedDate(QDate::currentDate());
-    });
     connect(m_taskDateInput, &QDateEdit::dateChanged, this, [this](const QDate &date) {
         if (!m_dueAtEnabled->isChecked()) {
             return;
@@ -731,6 +722,38 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_tagFilterInput, &TagSelectorWidget::tagsChanged, this, [this]() {
         refreshTodoList();
         saveUiState();
+    });
+    connect(m_prevDayButton, &QPushButton::clicked, this, [this]() {
+        if (m_dateNavigator != nullptr) {
+            m_dateNavigator->setSelectedDate(m_selectedDate.addDays(-1));
+        }
+    });
+    connect(m_todayQuickButton, &QPushButton::clicked, this, [this]() {
+        if (m_dateNavigator != nullptr) {
+            m_dateNavigator->setSelectedDate(QDate::currentDate());
+        }
+        if (m_todoStandardHeaderPanel != nullptr) {
+            m_todoStandardHeaderPanel->hide();
+        }
+    });
+    connect(m_nextDayButton, &QPushButton::clicked, this, [this]() {
+        if (m_dateNavigator != nullptr) {
+            m_dateNavigator->setSelectedDate(m_selectedDate.addDays(1));
+        }
+    });
+    connect(m_todayLabel, &QPushButton::clicked, this, [this]() {
+        if (m_todoStandardHeaderPanel == nullptr || m_todayLabel == nullptr) {
+            return;
+        }
+        if (m_todoStandardHeaderPanel->isVisible()) {
+            m_todoStandardHeaderPanel->hide();
+            return;
+        }
+        m_todoStandardHeaderPanel->adjustSize();
+        const QPoint popupPos = m_todayLabel->mapToGlobal(QPoint(0, m_todayLabel->height() + 8));
+        m_todoStandardHeaderPanel->move(popupPos);
+        m_todoStandardHeaderPanel->show();
+        m_todoStandardHeaderPanel->raise();
     });
     connect(m_clearFilterButton, &QPushButton::clicked, this, [this]() {
         m_viewModeFilter->setCurrentIndex(0);
@@ -892,6 +915,9 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
     if (m_todoList != nullptr && m_todoList->count() > 0) {
         refreshTodoList();
+    }
+    if (isVisible() && !isMinimized() && !isMaximized()) {
+        saveUiState();
     }
 }
 
@@ -1266,7 +1292,6 @@ void MainWindow::loadUiState() {
         }
         m_tagFilterInput->setSelectedTags(savedTags);
     }
-
     if (m_focusMinutes != nullptr) {
         const int savedFocusMinutes = settings.value("pomodoro/focus_minutes", m_focusMinutes->value()).toInt();
         const QSignalBlocker blocker(m_focusMinutes);
@@ -1468,6 +1493,18 @@ void MainWindow::rebuildStatsMetricLayout() {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (auto *button = qobject_cast<QPushButton *>(watched); button != nullptr) {
+        const QString normalIconPath = button->property("headerNormalIcon").toString();
+        const QString hoverIconPath = button->property("headerHoverIcon").toString();
+        if (!normalIconPath.isEmpty() && !hoverIconPath.isEmpty()) {
+            if (event->type() == QEvent::Enter) {
+                button->setIcon(QIcon(hoverIconPath));
+            } else if (event->type() == QEvent::Leave) {
+                button->setIcon(QIcon(normalIconPath));
+            }
+        }
+    }
+
     if (event->type() == QEvent::Wheel) {
         QWidget *watchedWidget = qobject_cast<QWidget *>(watched);
         const bool onTodoList = m_todoList != nullptr
@@ -1569,71 +1606,66 @@ QWidget *MainWindow::buildTodoTab() {
     auto *headerTitleRow = new QHBoxLayout();
     headerTitleRow->setContentsMargins(0, 0, 0, 0);
     headerTitleRow->setSpacing(8);
-    m_todayLabel = new QLabel(tab);
+    auto configureHeaderIconButton = [this](QPushButton *button, const QString &normalPath, const QString &hoverPath) {
+        button->setIcon(QIcon(normalPath));
+        button->setProperty("headerNormalIcon", normalPath);
+        button->setProperty("headerHoverIcon", hoverPath);
+        button->installEventFilter(this);
+    };
+    m_prevDayButton = new QPushButton(tab);
+    m_prevDayButton->setObjectName("headerIconButton");
+    m_prevDayButton->setFixedSize(42, 42);
+    m_prevDayButton->setCursor(Qt::PointingHandCursor);
+    configureHeaderIconButton(m_prevDayButton, ":/icons/nav-prev.png", ":/icons/nav-prev-hover.png");
+    m_prevDayButton->setIconSize(QSize(42, 42));
+
+    m_todayLabel = new QPushButton(tab);
     m_todayLabel->setObjectName("pageTitle");
-    m_todayLabel->setWordWrap(true);
+    m_todayLabel->setFlat(true);
+    m_todayLabel->setCursor(Qt::PointingHandCursor);
+    m_todayLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_todayLabel->setMinimumWidth(0);
 
-    m_todoSummaryLabel = new QLabel(tab);
-    m_todoSummaryLabel->setObjectName("summaryPill");
-    m_todoSummaryLabel->setWordWrap(true);
-    m_todoSummaryLabel->setAlignment(Qt::AlignCenter);
-    m_todoSummaryLabel->setMinimumHeight(40);
+    m_nextDayButton = new QPushButton(tab);
+    m_nextDayButton->setObjectName("headerIconButton");
+    m_nextDayButton->setFixedSize(42, 42);
+    m_nextDayButton->setCursor(Qt::PointingHandCursor);
+    configureHeaderIconButton(m_nextDayButton, ":/icons/nav-next.png", ":/icons/nav-next-hover.png");
+    m_nextDayButton->setIconSize(QSize(42, 42));
 
-    m_filterToggleButton = new QPushButton("视图与筛选", tab);
-    m_filterToggleButton->setObjectName("secondaryButton");
+    m_filterToggleButton = new QPushButton(tab);
+    m_filterToggleButton->setObjectName("headerIconButton");
     m_filterToggleButton->setMinimumHeight(36);
     m_filterToggleButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    m_todoSummaryLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    m_filterToggleButton->setToolTip("视图与筛选");
+    configureHeaderIconButton(m_filterToggleButton, ":/icons/nav-filter.png", ":/icons/nav-filter-hover.png");
+    m_filterToggleButton->setIconSize(QSize(42, 42));
+    m_filterToggleButton->setFixedSize(42, 42);
 
-    headerTitleRow->addWidget(m_todayLabel, 1);
-    headerTitleRow->addWidget(m_filterToggleButton, 0, Qt::AlignVCenter);
-    headerTitleRow->addWidget(m_todoSummaryLabel, 0, Qt::AlignVCenter);
+    auto *leftHeaderBox = new QWidget(content);
+    leftHeaderBox->setFixedWidth(92);
+    auto *leftHeaderLayout = new QHBoxLayout(leftHeaderBox);
+    leftHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    leftHeaderLayout->setSpacing(8);
+    leftHeaderLayout->addWidget(m_prevDayButton, 0, Qt::AlignLeft | Qt::AlignVCenter);
+    leftHeaderLayout->addStretch(1);
+
+    auto *rightHeaderBox = new QWidget(content);
+    rightHeaderBox->setFixedWidth(92);
+    auto *rightHeaderLayout = new QHBoxLayout(rightHeaderBox);
+    rightHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    rightHeaderLayout->setSpacing(8);
+    rightHeaderLayout->addWidget(m_nextDayButton, 0, Qt::AlignRight | Qt::AlignVCenter);
+    rightHeaderLayout->addWidget(m_filterToggleButton, 0, Qt::AlignRight | Qt::AlignVCenter);
+
+    headerTitleRow->addWidget(leftHeaderBox, 0, Qt::AlignVCenter);
+    headerTitleRow->addWidget(m_todayLabel, 1, Qt::AlignCenter);
+    headerTitleRow->addWidget(rightHeaderBox, 0, Qt::AlignVCenter);
     headerLayout->addLayout(headerTitleRow);
 
     m_overdueReminderLabel = new QLabel(tab);
     m_overdueReminderLabel->setObjectName("overdueBanner");
     m_overdueReminderLabel->setVisible(false);
-
-    auto *compactDatePanel = new QFrame(content);
-    compactDatePanel->setObjectName("surfaceCard");
-    m_todoCompactDatePanel = compactDatePanel;
-    auto *compactDateLayout = new QVBoxLayout(compactDatePanel);
-    compactDateLayout->setContentsMargins(14, 14, 14, 14);
-    compactDateLayout->setSpacing(10);
-
-    auto *compactDateButtonPanel = new QWidget(compactDatePanel);
-    auto *compactDateTopRow = new FlowLayout(compactDateButtonPanel, 0, 8, 8);
-    auto *compactPrevButton = new QPushButton("前一天", compactDatePanel);
-    compactPrevButton->setObjectName("secondaryButton");
-    compactPrevButton->setMinimumHeight(34);
-    auto *compactTodayButton = new QPushButton("今天", compactDatePanel);
-    compactTodayButton->setObjectName("primaryButton");
-    compactTodayButton->setMinimumHeight(34);
-    auto *compactNextButton = new QPushButton("后一天", compactDatePanel);
-    compactNextButton->setObjectName("secondaryButton");
-    compactNextButton->setMinimumHeight(34);
-    auto *compactPickDateButton = new QPushButton("选日期", compactDatePanel);
-    compactPickDateButton->setObjectName("secondaryButton");
-    compactPickDateButton->setMinimumHeight(34);
-    compactPrevButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    compactTodayButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    compactNextButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    compactPickDateButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    m_compactSelectedDateLabel = new QLabel(formatDateTitle(m_selectedDate), compactDatePanel);
-    m_compactSelectedDateLabel->setObjectName("sectionTitleSmall");
-    m_compactSelectedDateLabel->setWordWrap(true);
-    compactDateTopRow->addWidget(compactPrevButton);
-    compactDateTopRow->addWidget(compactTodayButton);
-    compactDateTopRow->addWidget(compactNextButton);
-    compactDateTopRow->addWidget(compactPickDateButton);
-
-    auto *compactDateLabelRow = new QHBoxLayout();
-    compactDateLabelRow->setContentsMargins(0, 0, 0, 0);
-    compactDateLabelRow->addWidget(m_compactSelectedDateLabel);
-    compactDateLabelRow->addStretch(1);
-
-    compactDateLayout->addWidget(compactDateButtonPanel);
-    compactDateLayout->addLayout(compactDateLabelRow);
 
     auto *workspaceLayout = new QHBoxLayout();
     workspaceLayout->setSpacing(20);
@@ -1652,21 +1684,16 @@ QWidget *MainWindow::buildTodoTab() {
     m_selectedDateLabel->setObjectName("sidebarTitle");
     m_selectedDateMetaLabel = new QLabel("单日视图的任务导航", sidebarCard);
     m_selectedDateMetaLabel->setObjectName("mutedText");
-
-    auto *navigatorButtons = new QHBoxLayout();
-    navigatorButtons->setSpacing(4);
-    m_prevDayButton = new QPushButton("前一天", sidebarCard);
-    m_prevDayButton->setObjectName("secondaryButton");
     m_todayQuickButton = new QPushButton("今天", sidebarCard);
-    m_todayQuickButton->setObjectName("primaryButton");
-    m_nextDayButton = new QPushButton("后一天", sidebarCard);
-    m_nextDayButton->setObjectName("secondaryButton");
-    m_prevDayButton->setMinimumHeight(36);
-    m_todayQuickButton->setMinimumHeight(36);
-    m_nextDayButton->setMinimumHeight(36);
-    navigatorButtons->addWidget(m_prevDayButton, 1);
-    navigatorButtons->addWidget(m_todayQuickButton, 1);
-    navigatorButtons->addWidget(m_nextDayButton, 1);
+    m_todayQuickButton->setObjectName("secondaryButton");
+    m_todayQuickButton->setMinimumHeight(34);
+    m_todayQuickButton->setCursor(Qt::PointingHandCursor);
+
+    auto *sidebarHeaderRow = new QHBoxLayout();
+    sidebarHeaderRow->setContentsMargins(0, 0, 0, 0);
+    sidebarHeaderRow->setSpacing(8);
+    sidebarHeaderRow->addWidget(m_selectedDateLabel, 1, Qt::AlignLeft | Qt::AlignVCenter);
+    sidebarHeaderRow->addWidget(m_todayQuickButton, 0, Qt::AlignRight | Qt::AlignVCenter);
 
     m_dateNavigator = new QCalendarWidget(sidebarCard);
     m_dateNavigator->setSelectedDate(m_selectedDate);
@@ -1698,9 +1725,8 @@ QWidget *MainWindow::buildTodoTab() {
     statsLayout->addWidget(m_dayDoneCountLabel, 0, 1);
     statsLayout->addWidget(m_dayFocusCountLabel, 1, 0, 1, 2);
 
-    sidebarLayout->addWidget(m_selectedDateLabel);
+    sidebarLayout->addLayout(sidebarHeaderRow);
     sidebarLayout->addWidget(m_selectedDateMetaLabel);
-    sidebarLayout->addLayout(navigatorButtons);
     sidebarLayout->addWidget(m_dateNavigator);
     sidebarLayout->addLayout(statsLayout);
 
@@ -2008,37 +2034,6 @@ QWidget *MainWindow::buildTodoTab() {
         m_filterPopup->show();
         m_filterPopup->raise();
     });
-    connect(compactPrevButton, &QPushButton::clicked, this, [this]() {
-        if (m_dateNavigator != nullptr) {
-            m_dateNavigator->setSelectedDate(m_selectedDate.addDays(-1));
-        }
-    });
-    connect(compactTodayButton, &QPushButton::clicked, this, [this]() {
-        if (m_dateNavigator != nullptr) {
-            m_dateNavigator->setSelectedDate(QDate::currentDate());
-        }
-    });
-    connect(compactNextButton, &QPushButton::clicked, this, [this]() {
-        if (m_dateNavigator != nullptr) {
-            m_dateNavigator->setSelectedDate(m_selectedDate.addDays(1));
-        }
-    });
-    connect(compactPickDateButton, &QPushButton::clicked, this, [this, compactPickDateButton]() {
-        if (m_todoStandardHeaderPanel == nullptr) {
-            return;
-        }
-        if (m_todoStandardHeaderPanel->isVisible()) {
-            m_todoStandardHeaderPanel->hide();
-            return;
-        }
-        m_todoStandardHeaderPanel->adjustSize();
-        const QPoint popupPos = compactPickDateButton->mapToGlobal(
-            QPoint(compactPickDateButton->width() - m_todoStandardHeaderPanel->width(), compactPickDateButton->height() + 8));
-        m_todoStandardHeaderPanel->move(popupPos);
-        m_todoStandardHeaderPanel->show();
-        m_todoStandardHeaderPanel->raise();
-    });
-
     m_todoList = new QListWidget(content);
     m_todoList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_todoList->setWordWrap(true);
@@ -2046,31 +2041,9 @@ QWidget *MainWindow::buildTodoTab() {
     m_todoList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_todoList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_todoList->verticalScrollBar()->setSingleStep(18);
-    m_todoList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_todoList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     m_todoList->installEventFilter(this);
     m_todoList->viewport()->installEventFilter(this);
-
-    auto *compactSummaryPanel = new QFrame(content);
-    compactSummaryPanel->setObjectName("surfaceCard");
-    auto *compactSummaryLayout = new QGridLayout(compactSummaryPanel);
-    compactSummaryLayout->setContentsMargins(14, 14, 14, 14);
-    compactSummaryLayout->setHorizontalSpacing(10);
-    compactSummaryLayout->setVerticalSpacing(10);
-    compactSummaryLayout->setColumnStretch(0, 1);
-    compactSummaryLayout->setColumnStretch(1, 1);
-    compactSummaryLayout->setColumnStretch(2, 1);
-    m_compactTaskCountLabel = new QLabel(compactSummaryPanel);
-    m_compactTaskCountLabel->setObjectName("sidebarStatCard");
-    m_compactDoneCountLabel = new QLabel(compactSummaryPanel);
-    m_compactDoneCountLabel->setObjectName("sidebarStatCard");
-    m_compactFocusCountLabel = new QLabel(compactSummaryPanel);
-    m_compactFocusCountLabel->setObjectName("sidebarStatCard");
-    m_compactTaskCountLabel->setWordWrap(true);
-    m_compactDoneCountLabel->setWordWrap(true);
-    m_compactFocusCountLabel->setWordWrap(true);
-    compactSummaryLayout->addWidget(m_compactTaskCountLabel, 0, 0);
-    compactSummaryLayout->addWidget(m_compactDoneCountLabel, 0, 1);
-    compactSummaryLayout->addWidget(m_compactFocusCountLabel, 0, 2);
 
     auto *planCard = new QFrame(content);
     planCard->setObjectName("surfaceCard");
@@ -2085,7 +2058,7 @@ QWidget *MainWindow::buildTodoTab() {
     m_planList = new QListWidget(planCard);
     m_planList->setSelectionMode(QAbstractItemView::NoSelection);
     m_planList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    m_planList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_planList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     m_planList->setSpacing(6);
     m_planList->setMaximumHeight(220);
     m_planList->installEventFilter(this);
@@ -2096,8 +2069,6 @@ QWidget *MainWindow::buildTodoTab() {
 
     layout->addLayout(headerLayout);
     layout->addWidget(m_overdueReminderLabel);
-    layout->addWidget(compactDatePanel);
-    contentLayout->addWidget(compactSummaryPanel);
     contentLayout->addWidget(planCard);
     contentLayout->addWidget(m_todoList);
     contentLayout->addWidget(editorCard);
@@ -2773,7 +2744,8 @@ void MainWindow::refreshAll() {
 
 void MainWindow::refreshTodoList() {
     const TodoListMode mode = currentTodoListMode();
-    m_todayLabel->setText(QString("%1  ·  %2").arg(todoListModeText(mode), m_selectedDate.toString("yyyy-MM-dd ddd")));
+    m_todayLabel->setText(m_selectedDate.toString("yyyy-MM-dd ddd"));
+    m_todayLabel->setToolTip(QString("%1，点击打开日期导航").arg(todoListModeText(mode)));
 
     const QList<TodoItem> allTodos = m_storage.allTodos();
     QList<TodoItem> scopedTodos;
@@ -2843,12 +2815,6 @@ void MainWindow::refreshTodoList() {
         if (matchesFilters(todo)) {
             visibleTodos.push_back(todo);
         }
-    }
-
-    m_todoSummaryLabel->setText(QString("显示 %1 / %2").arg(visibleTodos.size()).arg(scopedTodos.size()));
-
-    if (m_compactSelectedDateLabel != nullptr) {
-        m_compactSelectedDateLabel->setText(formatDateTitle(m_selectedDate));
     }
 
     refreshOverdueReminder(allTodos);
@@ -3984,9 +3950,6 @@ void MainWindow::refreshDateSidebar(const QList<TodoItem> &allTodos) {
     m_dayTaskCountLabel->setText(QString("任务总数\n%1 项").arg(total));
     m_dayDoneCountLabel->setText(QString("已完成\n%1 项").arg(completed));
     m_dayFocusCountLabel->setText(QString("番茄数\n%1 个").arg(focusCount));
-    if (m_compactSelectedDateLabel != nullptr) {
-        m_compactSelectedDateLabel->setText(formatDateTitle(m_selectedDate));
-    }
     if (m_compactTaskCountLabel != nullptr) {
         m_compactTaskCountLabel->setText(QString("任务总数\n%1 项").arg(total));
     }
@@ -4582,10 +4545,32 @@ void MainWindow::applyTheme() {
             font-size: 12px;
             font-weight: 400;
         }
-        QLabel#pageTitle {
+        QLabel#pageTitle, QPushButton#pageTitle {
             font-size: 22px;
             font-weight: 700;
             color: #191919;
+        }
+        QPushButton#pageTitle {
+            background: transparent;
+            border: 0;
+            padding: 0;
+            text-align: center;
+        }
+        QPushButton#pageTitle:hover {
+            color: #07c160;
+        }
+        QPushButton#headerIconButton {
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+        QPushButton#headerIconButton:hover {
+            background: transparent;
+            border: 0;
+        }
+        QPushButton#headerIconButton:pressed {
+            background: transparent;
+            border: 0;
         }
         QLabel#sidebarTitle {
             font-size: 20px;
@@ -4617,15 +4602,6 @@ void MainWindow::applyTheme() {
         }
 )")
         + QStringLiteral(R"(
-        QLabel#summaryPill {
-            background: #e6fff0;
-            border: 1px solid #9be7b4;
-            border-radius: 18px;
-            padding: 9px 18px;
-            color: #05a650;
-            font-size: 14px;
-            font-weight: 800;
-        }
         QLabel#overdueBanner {
             background: #fff1f0;
             color: #fa5151;
