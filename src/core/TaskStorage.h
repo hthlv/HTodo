@@ -63,6 +63,8 @@ public:
 
     bool load();
     bool save() const;
+    QString storageFilePath() const;
+    bool setStorageFilePath(const QString &filePath);
 
     QList<TodoItem> allTodos() const;
     QList<TodoPlan> allPlans() const;

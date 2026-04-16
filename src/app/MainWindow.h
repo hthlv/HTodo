@@ -16,6 +16,7 @@ class QDateTimeEdit;
 class QBoxLayout;
 class QHBoxLayout;
 class QCloseEvent;
+class QMoveEvent;
 class QFrame;
 class QGridLayout;
 class QLayout;
@@ -51,6 +52,7 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void moveEvent(QMoveEvent *event) override;
 
 private slots:
     void addTodo();
@@ -184,6 +186,8 @@ private:
     QLabel *m_statsHeroLabel = nullptr;
     QLabel *m_statsFocusInsightLabel = nullptr;
     QLabel *m_statsTimingInsightLabel = nullptr;
+    QLabel *m_storagePathLabel = nullptr;
+    QLabel *m_storagePathHintLabel = nullptr;
     QListWidget *m_statsRankingList = nullptr;
     TagAnalysisChartWidget *m_tagTimingChart = nullptr;
     TagAnalysisChartWidget *m_tagFocusChart = nullptr;
@@ -200,6 +204,7 @@ private:
     QWidget *m_activeTaskTimingCard = nullptr;
     QWidget *m_statsStandardPanel = nullptr;
     QPushButton *m_statsRefreshButton = nullptr;
+    QPushButton *m_storagePathActionButton = nullptr;
 
     QWidget *buildTodoTab();
     QWidget *buildPomodoroTab();
@@ -209,6 +214,7 @@ private:
     void refreshPlanList();
     void updateTodoItemSizeHints();
     void refreshStats();
+    void refreshStoragePathUi();
     void refreshPomodoroView(int remainingSeconds, PomodoroTimer::Phase phase);
     void refreshPomodoroBindings();
     void refreshTagPresets();
@@ -231,6 +237,9 @@ private:
     QString settingsFilePath() const;
     QString windowPositionSettingsKey(WindowLayoutMode mode) const;
     QPoint savedWindowPosition(WindowLayoutMode mode) const;
+    QRect savedWindowGeometry() const;
+    QScreen *screenByName(const QString &name) const;
+    QScreen *screenForRectCenter(const QRect &rect) const;
     void setupTrayIcon();
     void updateTrayActions();
     void showFromTray();

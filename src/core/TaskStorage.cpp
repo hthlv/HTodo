@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QUuid>
 
@@ -45,6 +46,15 @@ QString appDataDirPath() {
     }
 
     return QDir::currentPath();
+}
+
+QString storageSettingsFilePath() {
+    const QString appName = QCoreApplication::applicationName().isEmpty()
+                                ? QStringLiteral("HTodo")
+                                : QCoreApplication::applicationName();
+    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    const QString dirPath = configPath.isEmpty() ? appDataDirPath() : configPath;
+    return QDir(dirPath).filePath(appName + ".ini");
 }
 
 QString legacyDataFilePath() {
@@ -87,7 +97,15 @@ bool todoCoversDate(const TodoItem &item, const QDate &date) {
 }
 
 TaskStorage::TaskStorage() {
-    m_filePath = QDir(appDataDirPath()).filePath("data.json");
+    QString initialPath = QDir(appDataDirPath()).filePath("data.json");
+#if defined(Q_OS_WINDOWS)
+    QSettings settings(storageSettingsFilePath(), QSettings::IniFormat);
+    const QString customPath = settings.value("storage/data_file_path").toString().trimmed();
+    if (!customPath.isEmpty()) {
+        initialPath = customPath;
+    }
+#endif
+    m_filePath = initialPath;
 
     const QString legacyFilePath = legacyDataFilePath();
     if (legacyFilePath != m_filePath
@@ -342,6 +360,39 @@ bool TaskStorage::save() const {
 
     const QJsonDocument doc(root);
     file.write(doc.toJson(QJsonDocument::Indented));
+    return true;
+}
+
+QString TaskStorage::storageFilePath() const {
+    return m_filePath;
+}
+
+bool TaskStorage::setStorageFilePath(const QString &filePath) {
+    const QString trimmed = filePath.trimmed();
+    if (trimmed.isEmpty()) {
+        return false;
+    }
+
+    const QString normalized = QFileInfo(trimmed).absoluteFilePath();
+    if (normalized == m_filePath) {
+        return true;
+    }
+
+    const QString oldFilePath = m_filePath;
+    m_filePath = normalized;
+    const bool saved = save();
+    if (!saved) {
+        m_filePath = oldFilePath;
+        return false;
+    }
+
+#if defined(Q_OS_WINDOWS)
+    if (ensureParentDir(storageSettingsFilePath())) {
+        QSettings settings(storageSettingsFilePath(), QSettings::IniFormat);
+        settings.setValue("storage/data_file_path", m_filePath);
+        settings.sync();
+    }
+#endif
     return true;
 }
 

@@ -17,6 +17,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QEvent>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QFont>
@@ -202,6 +203,13 @@ QRect availableGeometryForWindow(const QWidget *window) {
     }
 
     return QRect(0, 0, kBaseWindowWidth, kBaseWindowHeight);
+}
+
+QRect availableGeometryForScreen(const QScreen *screenHandle) {
+    if (screenHandle != nullptr) {
+        return screenHandle->availableGeometry();
+    }
+    return availableGeometryForWindow(nullptr);
 }
 
 QSize fixedWindowSizeForGeometry(const QRect &availableGeometry) {
@@ -864,6 +872,13 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     }
 }
 
+void MainWindow::moveEvent(QMoveEvent *event) {
+    QMainWindow::moveEvent(event);
+    if (isVisible() && !isMinimized() && !isMaximized()) {
+        saveUiState();
+    }
+}
+
 QString MainWindow::settingsFilePath() const {
     const QString appName = QCoreApplication::applicationName().isEmpty()
                                 ? QStringLiteral("HTodo")
@@ -888,6 +903,53 @@ QPoint MainWindow::savedWindowPosition(WindowLayoutMode mode) const {
         return modeSpecificPosition;
     }
     return settings.value("window/position").toPoint();
+}
+
+QRect MainWindow::savedWindowGeometry() const {
+    QSettings settings(settingsFilePath(), QSettings::IniFormat);
+    const QRect frameGeometry = settings.value("window/frame_geometry").toRect();
+    if (frameGeometry.isValid() && !frameGeometry.isNull()) {
+        return frameGeometry;
+    }
+
+    const QRect geometry = settings.value("window/geometry").toRect();
+    if (geometry.isValid() && !geometry.isNull()) {
+        return geometry;
+    }
+
+    const QPoint topLeft = savedWindowPosition(m_windowLayoutMode);
+    if (topLeft.isNull()) {
+        return {};
+    }
+    return QRect(topLeft, size());
+}
+
+QScreen *MainWindow::screenByName(const QString &name) const {
+    if (name.isEmpty()) {
+        return nullptr;
+    }
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    for (QScreen *candidate : screens) {
+        if (candidate != nullptr && candidate->name() == name) {
+            return candidate;
+        }
+    }
+    return nullptr;
+}
+
+QScreen *MainWindow::screenForRectCenter(const QRect &rect) const {
+    if (!rect.isValid()) {
+        return nullptr;
+    }
+
+    const QPoint center = rect.center();
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    for (QScreen *candidate : screens) {
+        if (candidate != nullptr && candidate->availableGeometry().contains(center)) {
+            return candidate;
+        }
+    }
+    return nullptr;
 }
 
 void MainWindow::setupTrayIcon() {
@@ -1112,8 +1174,21 @@ void MainWindow::applyScaledMetrics() {
 
 void MainWindow::loadUiState() {
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
-    const QRect availableGeometry = availableGeometryForWindow(this);
-    QSize targetSize = fixedWindowSizeForGeometry(availableGeometry);
+    const QRect savedGeometry = savedWindowGeometry();
+    const QString savedScreenName = settings.value("window/screen_name").toString();
+    QScreen *targetScreen = screenByName(savedScreenName);
+    if (targetScreen == nullptr) {
+        targetScreen = screenForRectCenter(savedGeometry);
+    }
+    if (targetScreen == nullptr) {
+        targetScreen = screen();
+    }
+    if (targetScreen == nullptr) {
+        targetScreen = QGuiApplication::primaryScreen();
+    }
+
+    const QRect targetAvailableGeometry = availableGeometryForScreen(targetScreen);
+    QSize targetSize = fixedWindowSizeForGeometry(targetAvailableGeometry);
     m_uiScale = static_cast<double>(targetSize.width()) / static_cast<double>(kBaseWindowWidth);
     applyTheme();
     m_windowLayoutMode = WindowLayoutMode::Compact;
@@ -1123,7 +1198,7 @@ void MainWindow::loadUiState() {
     if (QLayout *centralLayout = centralWidget() != nullptr ? centralWidget()->layout() : nullptr; centralLayout != nullptr) {
         centralLayout->activate();
     }
-    targetSize = boundedWindowSize(availableGeometry, targetSize, minimumSizeHint().expandedTo(sizeHint()));
+    targetSize = boundedWindowSize(targetAvailableGeometry, targetSize, minimumSizeHint().expandedTo(sizeHint()));
     m_uiScale = static_cast<double>(targetSize.width()) / static_cast<double>(kBaseWindowWidth);
     applyTheme();
     applyWindowLayoutMode();
@@ -1188,21 +1263,36 @@ void MainWindow::loadUiState() {
     }
     applyWindowPresetForTab(m_tabs != nullptr ? m_tabs->currentIndex() : 0);
 
-    const QPoint savedPosition = settings.value("window/position").toPoint();
-    if (!savedPosition.isNull()) {
-        move(boundedTopLeft(availableGeometry, frameGeometry().size(), savedPosition));
+    QPoint requestedTopLeft;
+    if (savedGeometry.isValid() && !savedGeometry.isNull()) {
+        requestedTopLeft = savedGeometry.topLeft();
     } else {
-        move(boundedTopLeft(availableGeometry, frameGeometry().size(),
-                            centeredTopLeft(availableGeometry, frameGeometry().size())));
+        requestedTopLeft = settings.value("window/position").toPoint();
+    }
+
+    if (!requestedTopLeft.isNull()) {
+        move(boundedTopLeft(targetAvailableGeometry, frameGeometry().size(), requestedTopLeft));
+    } else {
+        move(boundedTopLeft(targetAvailableGeometry, frameGeometry().size(),
+                            centeredTopLeft(targetAvailableGeometry, frameGeometry().size())));
     }
     m_trayHintShown = settings.value("tray/hint_shown", false).toBool();
+    refreshStoragePathUi();
 }
 
 void MainWindow::saveUiState() const {
     ensureParentDir(settingsFilePath());
     QSettings settings(settingsFilePath(), QSettings::IniFormat);
     const QRect normalRect = isMaximized() ? normalGeometry() : geometry();
-    settings.setValue("window/position", normalRect.topLeft());
+    const QRect frameRect = frameGeometry();
+    settings.setValue("window/position", frameRect.topLeft());
+    settings.setValue("window/frame_geometry", frameRect);
+    settings.setValue("window/geometry", normalRect);
+    if (QScreen *currentScreen = screen(); currentScreen != nullptr) {
+        settings.setValue("window/screen_name", currentScreen->name());
+    } else {
+        settings.remove("window/screen_name");
+    }
     settings.remove("window/size");
     settings.setValue("window/current_tab", m_tabs != nullptr ? m_tabs->currentIndex() : 0);
     settings.setValue("todo/selected_date", m_selectedDate.toString(Qt::ISODate));
@@ -2253,8 +2343,57 @@ QWidget *MainWindow::buildStatsTab() {
     statsStandardLayout->addWidget(m_statsRankingList);
     statsStandardLayout->addWidget(m_tagTimingChart);
     statsStandardLayout->addWidget(m_tagFocusChart);
+
+    auto *storageCard = new QFrame(content);
+    storageCard->setObjectName("surfaceCardSoft");
+    auto *storageLayout = new QVBoxLayout(storageCard);
+    storageLayout->setContentsMargins(16, 14, 16, 14);
+    storageLayout->setSpacing(8);
+    auto *storageTitle = new QLabel("数据存储位置", storageCard);
+    storageTitle->setObjectName("sectionTitleSmall");
+    m_storagePathLabel = new QLabel(storageCard);
+    m_storagePathLabel->setObjectName("mutedText");
+    m_storagePathLabel->setWordWrap(true);
+    m_storagePathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    m_storagePathHintLabel = new QLabel(storageCard);
+    m_storagePathHintLabel->setObjectName("mutedText");
+    m_storagePathHintLabel->setWordWrap(true);
+    m_storagePathActionButton = new QPushButton(storageCard);
+    m_storagePathActionButton->setObjectName("secondaryButton");
+    connect(m_storagePathActionButton, &QPushButton::clicked, this, [this]() {
+#if defined(Q_OS_WINDOWS)
+        const QString currentPath = m_storage.storageFilePath();
+        const QString suggested = QDir(QFileInfo(currentPath).absolutePath()).filePath("data.json");
+        const QString selectedPath = QFileDialog::getSaveFileName(
+            this,
+            "选择数据文件",
+            suggested,
+            "JSON 文件 (*.json);;所有文件 (*)");
+        if (selectedPath.isEmpty()) {
+            return;
+        }
+
+        if (!m_storage.setStorageFilePath(selectedPath)) {
+            showAppWarningDialog(this, "路径更新失败", "无法切换数据文件路径，请确认目录可写后重试。");
+            return;
+        }
+
+        refreshAll();
+        refreshStoragePathUi();
+        statusBar()->showMessage("数据文件路径已更新。", 2500);
+#else
+        refreshStoragePathUi();
+#endif
+    });
+    storageLayout->addWidget(storageTitle);
+    storageLayout->addWidget(m_storagePathLabel);
+    storageLayout->addWidget(m_storagePathHintLabel);
+    storageLayout->addWidget(m_storagePathActionButton, 0, Qt::AlignLeft);
+    refreshStoragePathUi();
+
     contentLayout->addSpacing(16);
     contentLayout->addWidget(statsStandardPanel);
+    contentLayout->addWidget(storageCard);
     contentLayout->addWidget(refreshBtn);
     contentLayout->addStretch(1);
 
@@ -3256,6 +3395,25 @@ void MainWindow::refreshStats() {
     if (m_tagFocusChart != nullptr) {
         m_tagFocusChart->setChartData("标签分析 · 番茄数量", "当前还没有带标签的番茄记录。", tagFocusBars);
     }
+    refreshStoragePathUi();
+}
+
+void MainWindow::refreshStoragePathUi() {
+    if (m_storagePathLabel == nullptr || m_storagePathHintLabel == nullptr || m_storagePathActionButton == nullptr) {
+        return;
+    }
+
+    const QString path = QDir::toNativeSeparators(m_storage.storageFilePath());
+    m_storagePathLabel->setText(path);
+#if defined(Q_OS_WINDOWS)
+    m_storagePathHintLabel->setText("Windows：支持自定义数据文件路径，修改后会自动保存并立即生效。");
+    m_storagePathActionButton->setText("更改路径");
+    m_storagePathActionButton->setEnabled(true);
+#else
+    m_storagePathHintLabel->setText("Linux：当前版本仅支持查看存储路径。");
+    m_storagePathActionButton->setText("仅查看");
+    m_storagePathActionButton->setEnabled(false);
+#endif
 }
 
 void MainWindow::refreshTaskTimingUi() {
