@@ -1018,14 +1018,8 @@ void MainWindow::setupTrayIcon() {
         QCoreApplication::quit();
     });
     connect(m_trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
-        if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
-            if (isHidden()) {
-                showFromTray();
-            } else {
-                saveUiState();
-                hide();
-                updateTrayActions();
-            }
+        if (reason == QSystemTrayIcon::DoubleClick) {
+            showFromTray();
         }
     });
 
