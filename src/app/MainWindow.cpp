@@ -1586,21 +1586,19 @@ QWidget *MainWindow::buildTodoTab() {
     m_todoSummaryLabel = new QLabel(tab);
     m_todoSummaryLabel->setObjectName("summaryPill");
     m_todoSummaryLabel->setWordWrap(true);
+    m_todoSummaryLabel->setAlignment(Qt::AlignCenter);
+    m_todoSummaryLabel->setMinimumHeight(40);
 
     m_filterToggleButton = new QPushButton("视图与筛选", tab);
     m_filterToggleButton->setObjectName("secondaryButton");
     m_filterToggleButton->setMinimumHeight(36);
+    m_filterToggleButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_todoSummaryLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     headerTitleRow->addWidget(m_todayLabel, 1);
+    headerTitleRow->addWidget(m_filterToggleButton, 0, Qt::AlignVCenter);
+    headerTitleRow->addWidget(m_todoSummaryLabel, 0, Qt::AlignVCenter);
     headerLayout->addLayout(headerTitleRow);
-
-    auto *headerActionPanel = new QWidget(content);
-    auto *headerActionFlow = new FlowLayout(headerActionPanel, 0, 10, 10);
-    m_filterToggleButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    m_todoSummaryLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-    headerActionFlow->addWidget(m_filterToggleButton);
-    headerActionFlow->addWidget(m_todoSummaryLabel);
-    headerLayout->addWidget(headerActionPanel);
 
     m_overdueReminderLabel = new QLabel(tab);
     m_overdueReminderLabel->setObjectName("overdueBanner");
@@ -4592,11 +4590,13 @@ void MainWindow::applyTheme() {
 )")
         + QStringLiteral(R"(
         QLabel#summaryPill {
-            background: #eaf8f0;
-            border-radius: 16px;
-            padding: 7px 14px;
-            color: #07c160;
-            font-weight: 600;
+            background: #e6fff0;
+            border: 1px solid #9be7b4;
+            border-radius: 18px;
+            padding: 9px 18px;
+            color: #05a650;
+            font-size: 14px;
+            font-weight: 800;
         }
         QLabel#overdueBanner {
             background: #fff1f0;
