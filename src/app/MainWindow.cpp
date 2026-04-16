@@ -268,6 +268,31 @@ QPoint boundedTopLeft(const QRect &availableGeometry, const QSize &windowSize, c
         qBound(minY, requestedTopLeft.y(), maxY));
 }
 
+bool scrollListWidgetFromWheel(QListWidget *listWidget, QWheelEvent *wheelEvent) {
+    if (listWidget == nullptr || wheelEvent == nullptr) {
+        return false;
+    }
+
+    QScrollBar *scrollBar = listWidget->verticalScrollBar();
+    if (scrollBar == nullptr || scrollBar->maximum() <= 0) {
+        return false;
+    }
+
+    int delta = 0;
+    if (!wheelEvent->pixelDelta().isNull()) {
+        delta = wheelEvent->pixelDelta().y();
+    } else if (!wheelEvent->angleDelta().isNull()) {
+        delta = (wheelEvent->angleDelta().y() / 120) * qMax(24, scrollBar->singleStep() * 3);
+    }
+
+    if (delta == 0) {
+        return true;
+    }
+
+    scrollBar->setValue(scrollBar->value() - delta);
+    return true;
+}
+
 QString scaleStyleSheetPixels(const QString &styleSheet, double scale) {
     if (scale >= 0.999) {
         return styleSheet;
@@ -329,6 +354,18 @@ void installWheelBlocker(QWidget *widget, bool includeChildren = false) {
     const auto children = widget->findChildren<QWidget *>();
     for (QWidget *child : children) {
         child->installEventFilter(blocker);
+    }
+}
+
+void installEventFilterOnWidgetTree(QObject *filter, QWidget *widget) {
+    if (filter == nullptr || widget == nullptr) {
+        return;
+    }
+
+    widget->installEventFilter(filter);
+    const auto children = widget->findChildren<QWidget *>();
+    for (QWidget *child : children) {
+        child->installEventFilter(filter);
     }
 }
 
@@ -1443,6 +1480,14 @@ void MainWindow::rebuildStatsMetricLayout() {
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if (event->type() == QEvent::Wheel) {
         QWidget *watchedWidget = qobject_cast<QWidget *>(watched);
+        const bool onTodoList = m_todoList != nullptr
+                                && (watched == m_todoList
+                                    || watched == m_todoList->viewport()
+                                    || (watchedWidget != nullptr && m_todoList->isAncestorOf(watchedWidget)));
+        const bool onPlanList = m_planList != nullptr
+                                && (watched == m_planList
+                                    || watched == m_planList->viewport()
+                                    || (watchedWidget != nullptr && m_planList->isAncestorOf(watchedWidget)));
         const bool onCalendar = m_dateNavigator != nullptr
                                 && (watched == m_dateNavigator
                                     || (watchedWidget != nullptr && m_dateNavigator->isAncestorOf(watchedWidget)));
@@ -1471,6 +1516,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 
         if (onTaskPopupCalendar || onDuePopupCalendar || onPlanPopupCalendar) {
             return true;
+        }
+
+        if (onTodoList) {
+            return scrollListWidgetFromWheel(m_todoList, static_cast<QWheelEvent *>(event));
+        }
+
+        if (onPlanList) {
+            return scrollListWidgetFromWheel(m_planList, static_cast<QWheelEvent *>(event));
         }
 
         if (onCalendar || onTaskDateInput || onDueAtInput || onPlanDateInput) {
@@ -1971,6 +2024,8 @@ QWidget *MainWindow::buildTodoTab() {
     m_todoList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_todoList->verticalScrollBar()->setSingleStep(18);
     m_todoList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    m_todoList->installEventFilter(this);
+    m_todoList->viewport()->installEventFilter(this);
 
     auto *compactSummaryPanel = new QFrame(content);
     compactSummaryPanel->setObjectName("surfaceCard");
@@ -2007,6 +2062,8 @@ QWidget *MainWindow::buildTodoTab() {
     m_planList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_planList->setSpacing(6);
     m_planList->setMaximumHeight(220);
+    m_planList->installEventFilter(this);
+    m_planList->viewport()->installEventFilter(this);
     planCardLayout->addWidget(planTitle);
     planCardLayout->addWidget(planHint);
     planCardLayout->addWidget(m_planList);
@@ -2805,6 +2862,7 @@ void MainWindow::refreshTodoList() {
         emptyLayout->addWidget(emptyTitle);
         emptyLayout->addWidget(emptyMeta);
         emptyLayout->addStretch(1);
+        installEventFilterOnWidgetTree(this, emptyCard);
         m_todoList->setItemWidget(emptyItem, emptyCard);
     } else {
         const int itemWidth = qMax(0, m_todoList->viewport()->width() - 6);
@@ -2930,6 +2988,7 @@ void MainWindow::refreshPlanList() {
         layout->addWidget(editButton, 0, Qt::AlignVCenter);
         layout->addWidget(removeButton, 0, Qt::AlignVCenter);
 
+            installEventFilterOnWidgetTree(this, card);
             m_planList->setItemWidget(item, card);
 
         connect(toggleButton, &QPushButton::clicked, this, [this, plan]() {
@@ -3870,6 +3929,7 @@ QWidget *MainWindow::createTodoCard(const TodoItem &todo) {
         deleteTodoById(id);
     });
 
+    installEventFilterOnWidgetTree(this, card);
     return card;
 }
 
